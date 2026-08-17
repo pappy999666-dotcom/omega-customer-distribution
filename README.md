@@ -1,4 +1,4 @@
-# Omega Customer Bot 1.2.23
+# Omega Customer Bot 1.2.24
 
 This repository publishes the source-protected Omega customer runtime. Customers deploy with one file: the root `index.js` bootstrap. It downloads the verified stable runtime, installs production dependencies, preserves the previous working release when an update fails, and starts the local bot.
 
@@ -86,7 +86,7 @@ The customer release excludes TypeScript source, source maps, panel credentials,
 
 ## Link previews
 
-Every message containing a URL is routed through the shared preview pipeline. A complete native WhatsApp preview is reused, while incomplete or untrusted fallback previews are refreshed from the actual URL. The runtime downloads and validates the URL’s real thumbnail when one exists. If the source has no usable image, the message remains thumbnail-less; Omega does not generate a fake replacement thumbnail.
+Every message containing a URL is routed through the shared preview pipeline. The current target’s real WhatsApp or URL thumbnail always outranks stale or previously rendered card bytes. Incomplete, untrusted, or fallback previews are refreshed from the actual URL. If the source has no usable image, the message remains thumbnail-less; Omega does not generate a fake replacement thumbnail.
 
 ## Parent Force Join verification
 

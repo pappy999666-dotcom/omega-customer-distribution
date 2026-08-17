@@ -2407,33 +2407,33 @@ var init_PreviewResolver = __esm({
             metadata["id"] ?? metadata["jid"] ?? metadata["newsletter_jid"] ?? thread["id"] ?? thread["jid"] ?? thread["newsletter_jid"] ?? ""
           ).trim();
           const newsletterJid = channelId.includes("@") ? channelId : channelId ? `${channelId}@newsletter` : "";
-          const sourceThumbnail = (existingPreview?.thumbnailSource === "native" || existingPreview?.thumbnailSource === "link") && PreviewValidator.isValidThumbnail(existingPreview?.thumbnail) ? PreviewCache.cloneBuffer(existingPreview.thumbnail) : void 0;
           let imageUrl = imageUrlFromValue(thread["picture"]) ?? imageUrlFromValue(metadata["picture"]);
           if (!imageUrl) {
             imageUrl = imageUrlFromValue(thread["image"]) ?? imageUrlFromValue(metadata["image"]);
           }
-          if (!imageUrl && !sourceThumbnail && newsletterJid && socket.profilePictureUrl) {
+          if (!imageUrl && newsletterJid && socket.profilePictureUrl) {
             imageUrl = await socket.profilePictureUrl(newsletterJid, "image").catch(() => null) ?? void 0;
           }
           if (!imageUrl && newsletterJid && socket.newsletterInfo) {
             const info2 = await socket.newsletterInfo(newsletterJid).catch(() => null);
             imageUrl = imageUrlFromValue(info2);
           }
-          let thumbnail = sourceThumbnail;
-          if (!thumbnail && imageUrl) {
+          const sourceThumbnail = !imageUrl && (existingPreview?.thumbnailSource === "native" || existingPreview?.thumbnailSource === "link") && PreviewValidator.isValidThumbnail(existingPreview?.thumbnail) ? PreviewCache.cloneBuffer(existingPreview.thumbnail) : void 0;
+          let thumbnail;
+          if (imageUrl) {
             const rawThumbnail = await ThumbnailResolver.download(imageUrl).catch(() => void 0);
             if (rawThumbnail) {
               const normalized = await ThumbnailResolver.normalize(rawThumbnail, imageUrl).catch(() => void 0);
               thumbnail = normalized ?? rawThumbnail;
             }
           }
-          if (!name && !description && !thumbnail) return void 0;
+          if (!name && !description && !thumbnail && !sourceThumbnail) return void 0;
           return await finalizePreview(url, {
             title: name?.trim() || existingPreview?.title?.trim() || "WhatsApp Channel",
             description: description?.trim() || existingPreview?.description?.trim() || (Number.isFinite(subscribers) ? `${subscribers} followers` : void 0),
             ...imageUrl ? { imageUrl } : {},
-            ...sourceThumbnail ? { thumbnailSource: existingPreview?.thumbnailSource ?? "native" } : {}
-          }, thumbnail);
+            ...thumbnail ? { thumbnailSource: "link" } : sourceThumbnail ? { thumbnailSource: existingPreview?.thumbnailSource } : {}
+          }, thumbnail ?? sourceThumbnail);
         } catch (error2) {
           PreviewLogger.metadataFallback(url, "Stage3_LinkPreviewJs", "Stage5_UrlOnly");
           return void 0;
@@ -2573,12 +2573,10 @@ var init_PreviewResolver = __esm({
             imageUrlFromValue(inviteRecord["thumbnail"]),
             imageUrlFromValue(inviteRecord["preview"])
           ].filter((value) => Boolean(value));
-          const sourceProvenance = existingPreview?.thumbnailSource;
-          const sourceThumbnail = (sourceProvenance === "native" || sourceProvenance === "link") && PreviewValidator.isValidThumbnail(existingPreview?.thumbnail) ? PreviewCache.cloneBuffer(existingPreview.thumbnail) : void 0;
-          const thumbnailResult = sourceThumbnail ? void 0 : await ThumbnailResolver.resolveGroupThumbnail(socket, info2.id, preferredThumbnailUrls);
-          const thumbnail = sourceThumbnail ?? thumbnailResult?.buffer;
-          const normalizedThumb = sourceThumbnail ? sourceThumbnail : thumbnailResult ? await ThumbnailResolver.normalize(thumbnailResult.buffer, thumbnailResult.sourceUrl).catch(() => thumbnailResult.buffer) : void 0;
-          const thumbnailSource = sourceThumbnail ? existingPreview?.thumbnailSource ?? "native" : thumbnailResult ? "link" : void 0;
+          const thumbnailResult = await ThumbnailResolver.resolveGroupThumbnail(socket, info2.id, preferredThumbnailUrls);
+          const thumbnail = thumbnailResult?.buffer;
+          const normalizedThumb = thumbnailResult ? await ThumbnailResolver.normalize(thumbnailResult.buffer, thumbnailResult.sourceUrl).catch(() => thumbnailResult.buffer) : void 0;
+          const thumbnailSource = thumbnailResult ? "link" : void 0;
           const title2 = String(info2.subject ?? "").replace(/[\u0000-\u001F\u007F]/gu, "").trim() || "WhatsApp Group";
           return await finalizePreview(url, {
             title: title2,
