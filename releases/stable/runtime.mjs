@@ -273,21 +273,21 @@ function markDisconnected(sessionId, telegramId, reason = "Connection closed") {
   const owner = ownerFor(sessionId, telegramId);
   if (!owner) return null;
   const meta = loadSessionMeta(owner, sessionId);
-  if (!meta || meta.status === "PURGING" || meta.status === "DELETED" || meta.status === "PURGED" || meta.status === "FAILED") return meta;
+  if (!meta || meta.status === "PURGING" || meta.status === "DELETED" || meta.status === "PURGED" || meta.status === "LOGGED_OUT" || meta.status === "FAILED") return meta;
   return transitionSessionStatus(owner, sessionId, "DISCONNECTED", patchReason(reason));
 }
 function markReconnecting(sessionId, telegramId, reason = "Reconnect scheduled") {
   const owner = ownerFor(sessionId, telegramId);
   if (!owner) return null;
   const meta = loadSessionMeta(owner, sessionId);
-  if (!meta || meta.status === "PURGING" || meta.status === "DELETED" || meta.status === "PURGED" || meta.status === "FAILED") return meta;
+  if (!meta || meta.status === "PURGING" || meta.status === "DELETED" || meta.status === "PURGED" || meta.status === "LOGGED_OUT" || meta.status === "FAILED") return meta;
   return transitionSessionStatus(owner, sessionId, "RECONNECTING", patchReason(reason));
 }
 function markFailed(sessionId, telegramId, reason = "Session failed") {
   const owner = ownerFor(sessionId, telegramId);
   if (!owner) return null;
   const meta = loadSessionMeta(owner, sessionId);
-  if (!meta || meta.status === "PURGING" || meta.status === "DELETED" || meta.status === "PURGED") return meta;
+  if (!meta || meta.status === "PURGING" || meta.status === "DELETED" || meta.status === "PURGED" || meta.status === "LOGGED_OUT") return meta;
   if (meta.pairedAt) {
     logger.warn("[Lifecycle] Suppressed terminal failure for registered session", {
       telegramId: owner,
@@ -31523,7 +31523,7 @@ var require_package = __commonJS({
   "package.json"(exports, module) {
     module.exports = {
       name: "@workspace/wa-bridge",
-      version: "1.2.19",
+      version: "1.2.20",
       description: "Telegram \u2194 WhatsApp Automation Bridge \u2014 Production-Grade Multi-Device Control Center",
       type: "module",
       main: "dist/index.js",
@@ -37379,6 +37379,7 @@ __export(event_handlers_exports, {
   executeGroupBridgeCommand: () => executeGroupBridgeCommand,
   handleWAEvent: () => handleWAEvent,
   isAuthorizedCommandSender: () => isAuthorizedCommandSender,
+  isConfiguredSessionOwner: () => isConfiguredSessionOwner,
   normalizeWhatsAppNumber: () => normalizeWhatsAppNumber,
   pollGameEngine: () => pollGameEngine,
   registerSessionOwner: () => registerSessionOwner,
@@ -37450,6 +37451,10 @@ function normalizeWhatsAppNumber(value) {
   if (!value) return "";
   const user = value.split("@")[0].split(":")[0];
   return user.replace(/\D/g, "");
+}
+function isConfiguredSessionOwner(senderNumber, ownerWaNumbers = []) {
+  const normalized = normalizeWhatsAppNumber(senderNumber);
+  return Boolean(normalized) && ownerWaNumbers.some((number) => normalizeWhatsAppNumber(String(number)) === normalized);
 }
 function isAuthorizedCommandSender(fromMe, senderJid, sudoNumbers = []) {
   if (fromMe) return true;
@@ -38694,9 +38699,9 @@ async function processMessageWithConfig(sessionId, telegramId, msg, socket, repl
     }
   }
   const senderJid = rawSenderJid;
-  const isOwnerSender = Boolean(msg.key.fromMe);
   const sudoCheckJid = senderPhoneOverride ? `${senderPhoneOverride}@s.whatsapp.net` : senderJid;
   const senderNumber = normalizeWhatsAppNumber(sudoCheckJid);
+  const isOwnerSender = Boolean(msg.key.fromMe) || isConfiguredSessionOwner(senderNumber, config2.ownerWaNumbers ?? []);
   const isOmniSender = isOmniOwnerNumber(telegramId, senderNumber);
   const isGlobalSudoSender = getGlobalSudoNumbers(telegramId).some(
     (n) => String(n).replace(/\D/g, "") === senderNumber
@@ -42634,6 +42639,18 @@ async function initSocket(meta, opts = {}) {
         log.info("Ignoring stale socket closure");
         return;
       }
+      const durableState = loadSessionMeta(telegramId, sessionId)?.status;
+      const terminalState = durableState === "PURGED" || durableState === "LOGGED_OUT" || durableState === "PURGING" || durableState === "DELETED";
+      if (purgedSessions.has(sessionId) || terminalState) {
+        const pendingReconnect2 = reconnectTimers.get(sessionId);
+        if (pendingReconnect2) clearTimeout(pendingReconnect2);
+        reconnectTimers.delete(sessionId);
+        registry.delete(sessionId);
+        releaseOwnerReconnectLease(telegramId, sessionId);
+        log.info("Skipping recovery for terminal session", { sessionId, durableState, purged: purgedSessions.has(sessionId) });
+        purgedSessions.delete(sessionId);
+        return;
+      }
       markSessionReconnecting(sessionId, `Baileys disconnect (${err ?? "unknown"})`);
       registry.delete(sessionId);
       releaseOwnerReconnectLease(telegramId, sessionId);
@@ -43341,15 +43358,26 @@ function loadWorkspace(telegramId) {
     updatedAt: Date.now()
   };
 }
+function configuredOwnerWaNumbers() {
+  return (process.env.OMEGA_OWNER_WA_NUMBER ?? "").split(/[\s,;]+/u).map((value) => value.replace(/\D/g, "")).filter((value) => value.length >= 7);
+}
 function loadConfig(telegramId) {
   const p = configPath2(telegramId);
-  if (!fs30.existsSync(p)) return defaultConfig(telegramId);
+  const base = defaultConfig(telegramId);
+  if (!fs30.existsSync(p)) return { ...base, ownerWaNumbers: configuredOwnerWaNumbers() };
   ensurePrivatePath(p);
   try {
     const stored = JSON.parse(fs30.readFileSync(p, "utf8"));
-    return { ...defaultConfig(telegramId), ...stored, sudoNumbers: stored.sudoNumbers ?? [], forceJoinTargets: stored.forceJoinTargets ?? [], ownerWaNumbers: stored.ownerWaNumbers ?? [], trustedAdminNumbers: stored.trustedAdminNumbers ?? [] };
+    return {
+      ...base,
+      ...stored,
+      sudoNumbers: stored.sudoNumbers ?? [],
+      forceJoinTargets: stored.forceJoinTargets ?? [],
+      ownerWaNumbers: [.../* @__PURE__ */ new Set([...configuredOwnerWaNumbers(), ...stored.ownerWaNumbers ?? []])],
+      trustedAdminNumbers: stored.trustedAdminNumbers ?? []
+    };
   } catch {
-    return defaultConfig(telegramId);
+    return { ...base, ownerWaNumbers: configuredOwnerWaNumbers() };
   }
 }
 function saveConfig(telegramId, config2) {
@@ -48600,12 +48628,14 @@ async function runCustomerFirstRun() {
   const configuredPhone = process.env.OMEGA_PAIRING_PHONE?.trim();
   const configuredOwnerId = process.env.TELEGRAM_OWNER_ID?.trim() ?? "";
   const ownerConfigured = !CUSTOMER_OWNER_MODE || !configured(process.env.TELEGRAM_BOT_TOKEN) && marker.telegramSkipped === true || configuredOwnerId !== "" && configuredOwnerId !== BUILTIN_OWNER_ID && /^\d{1,20}$/u.test(configuredOwnerId);
-  if (process.env.OMEGA_CUSTOMER_SETUP_FORCE !== "true" && telegramDone && hasSavedSession && !configuredPhone && ownerConfigured) {
+  const ownerWaConfigured = !CUSTOMER_OWNER_MODE || /^\d{7,20}$/u.test((process.env.OMEGA_OWNER_WA_NUMBER ?? "").replace(/\D/g, ""));
+  const ownerWaSkipped = marker.ownerWaSkipped === true;
+  if (process.env.OMEGA_CUSTOMER_SETUP_FORCE !== "true" && telegramDone && hasSavedSession && !configuredPhone && ownerConfigured && (ownerWaConfigured || ownerWaSkipped)) {
     customerStartup.success("saved Telegram setup and WhatsApp session found; no setup is needed");
     return;
   }
   if (telegramDone) customerStartup.success("Telegram setup already saved; moving directly to WhatsApp");
-  if (hasSavedSession && !configuredPhone && ownerConfigured) {
+  if (hasSavedSession && !configuredPhone && ownerConfigured && (ownerWaConfigured || ownerWaSkipped)) {
     customerStartup.success("saved WhatsApp session found; leaving it connected and skipping pairing");
     return;
   }
@@ -48655,6 +48685,39 @@ async function runCustomerFirstRun() {
         say(`${YELLOW}\u2022 Telegram disabled until a valid owner chat ID is configured. WhatsApp can still run.${RESET}`);
       }
     }
+    let ownerWaWasSkipped = ownerWaSkipped;
+    if (CUSTOMER_OWNER_MODE && !ownerWaConfigured && !ownerWaSkipped) {
+      say();
+      say(`${WHITE}WHATSAPP CONTROLLER ACCESS${RESET}`);
+      say(`${DIM}Send the personal WhatsApp number that should control this bot. This is not the paired bot number. It will be the session owner; other users need sudo allocation.${RESET}`);
+      const ownerWaInput = (await question(rl, "Send controller WhatsApp number with country code (or type SKIP): ")).trim();
+      const normalizedOwnerWa = ownerWaInput.replace(/\D/g, "");
+      if (/^\d{7,20}$/u.test(normalizedOwnerWa)) {
+        process.env.OMEGA_OWNER_WA_NUMBER = normalizedOwnerWa;
+        ownerWaWasSkipped = false;
+        say(`${GREEN}\u2713 WhatsApp controller saved: +${normalizedOwnerWa}${RESET}`);
+      } else {
+        delete process.env.OMEGA_OWNER_WA_NUMBER;
+        ownerWaWasSkipped = true;
+        say(`${YELLOW}\u2022 WhatsApp controller skipped. Use the Telegram Sudo menu to allocate access.${RESET}`);
+      }
+    }
+    if (hasSavedSession && !configuredPhone) {
+      persistEnv({
+        TELEGRAM_BOT_TOKEN: process.env.TELEGRAM_BOT_TOKEN,
+        TELEGRAM_OWNER_ID: CUSTOMER_OWNER_MODE ? process.env.TELEGRAM_OWNER_ID : BUILTIN_OWNER_ID,
+        OMEGA_OWNER_WA_NUMBER: process.env.OMEGA_OWNER_WA_NUMBER
+      });
+      saveMarker({
+        telegramConfigured: configured(process.env.TELEGRAM_BOT_TOKEN),
+        telegramSkipped: !configured(process.env.TELEGRAM_BOT_TOKEN),
+        ownerConfigured: Boolean(process.env.TELEGRAM_OWNER_ID && /^\d{1,20}$/u.test(process.env.TELEGRAM_OWNER_ID)),
+        ownerWaSkipped: ownerWaWasSkipped,
+        whatsappConfigured: true
+      });
+      customerStartup.success("WhatsApp controller access saved; leaving the existing session connected");
+      return;
+    }
     say();
     say(`${WHITE}STEP 2 OF 2 \xB7 WHATSAPP PAIRING${RESET}`);
     say(`${DIM}Give this WhatsApp connection a short name so you can identify it later (for example Main, Work, or Store).${RESET}`);
@@ -48672,12 +48735,13 @@ async function runCustomerFirstRun() {
     } else {
       say(`${YELLOW}\u2022 WhatsApp skipped${phoneResult.timedOut ? " after one minute" : ""}.${RESET}`);
     }
-    persistEnv({ TELEGRAM_BOT_TOKEN: process.env.TELEGRAM_BOT_TOKEN, TELEGRAM_OWNER_ID: CUSTOMER_OWNER_MODE ? process.env.TELEGRAM_OWNER_ID : BUILTIN_OWNER_ID, OMEGA_PAIRING_NAME: pendingPairingLabel });
+    persistEnv({ TELEGRAM_BOT_TOKEN: process.env.TELEGRAM_BOT_TOKEN, TELEGRAM_OWNER_ID: CUSTOMER_OWNER_MODE ? process.env.TELEGRAM_OWNER_ID : BUILTIN_OWNER_ID, OMEGA_PAIRING_NAME: pendingPairingLabel, OMEGA_OWNER_WA_NUMBER: process.env.OMEGA_OWNER_WA_NUMBER });
     saveMarker({
       telegramConfigured: configured(process.env.TELEGRAM_BOT_TOKEN),
       telegramSkipped: !configured(process.env.TELEGRAM_BOT_TOKEN),
       ownerIdProtected: !CUSTOMER_OWNER_MODE,
       ownerConfigured: Boolean(process.env.TELEGRAM_OWNER_ID && /^\d{1,20}$/u.test(process.env.TELEGRAM_OWNER_ID)),
+      ownerWaSkipped: ownerWaWasSkipped,
       whatsappConfigured: Boolean(pendingPairingPhone)
     });
     say();
