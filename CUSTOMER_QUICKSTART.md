@@ -9,26 +9,57 @@ This guide is for customers deploying the source-protected Omega runtime on a co
 | Item | Requirement |
 | --- | --- |
 | Runtime | Node.js 22 or newer |
-| Panel | A Node.js application or Pterodactyl server with outbound HTTPS access |
+| Panel | A hosted Node.js panel with outbound HTTPS access |
 | Startup file | `index.js` in the application root |
 | Startup command | `node index.js` |
 | Storage | Persistent disk for sessions, settings, and downloaded media |
 | Redis | Optional; recommended for queue-heavy or bulk workloads |
 | MongoDB | Optional unless your chosen configuration enables a Mongo-backed feature |
 
-The customer runtime does **not** require a Pterodactyl API token. Do not upload the private Omega monorepo, TypeScript source, source maps, VPS keys, Redis passwords, MongoDB credentials, or Core credentials.
+The customer runtime does **not** require a hosting-provider API token. Do not upload the private Omega monorepo, TypeScript source, source maps, VPS keys, Redis passwords, MongoDB credentials, or Core credentials.
 
-## Deploy on a Node.js panel
+## Choose a panel
 
-Create an empty Node.js application using Node.js 22 or newer. Upload only the supplied `index.js` file to the application root. Set the startup command to:
+The easiest route is a hosted Node.js panel that provides persistent disk, a live console, file upload, a startup command, and an automatic restart option. The exact labels vary between providers, but the Omega deployment always uses the same four values: **Node.js 22 or newer**, file **`index.js`**, startup command **`node index.js`**, and persistent application storage.
 
-```bash
-node index.js
-```
+| Option | Best use | What to expect |
+| --- | --- | --- |
+| **Spaceify** | The panel selected for this deployment guide | Open the client, create a Node.js server, upload `index.js`, set `node index.js`, and start it. The public client is login/CAPTCHA gated, so menu names may differ after sign-in. Confirm that the selected server has persistent storage and Node.js 22 or newer. |
+| **Zampto Hosting** | A documented free/freemium panel route | Create Server → choose account resources → allocate RAM, disk, CPU, backups, and port → choose **NodeJS** → choose a node → create. When ready, open **Control Panel → File Manager**, upload `index.js`, use **Console**, and set the startup command to `node index.js`. Zampto’s public guide says node selection cannot later be changed and that creation is queued. [1] |
+| **HidenCloud Free Node.js** | A free Node.js hosting alternative | The provider advertises a control panel, automatic `package.json` installation, WebSockets, HTTPS, 2 vCPU, 3 GB RAM, and 15 GB storage. It also says free plans renew weekly. Confirm current availability, Node.js 22 support, persistent disk, and startup-command controls after signing in. [2] |
 
-Start the application and watch the panel console. The live setup display will show each phase clearly. It is normal for the first start to download the protected runtime and install production packages. Do not press Stop and Start repeatedly during this first setup.
+### Spaceify deployment steps
 
-If the panel asks for an application port, use the port assigned by the panel. The bot does not require a public inbound webhook port for ordinary Telegram and WhatsApp operation; outbound HTTPS must be allowed.
+1. Sign in at <https://client.spaceify.eu/> and open the server dashboard.
+2. Create a new server or application. Choose a **Node.js** runtime/image. Select Node.js 22 or newer if the panel offers multiple versions.
+3. Wait until the server is created and open its **Files**, **File Manager**, or **Startup** area.
+4. Upload the supplied **`index.js`** file to the server’s root directory. Do not rename it and do not upload the private Omega source repository.
+5. Open **Startup**, **Configuration**, or the equivalent panel section and set the command to:
+
+   ```bash
+   node index.js
+   ```
+
+6. Open **Console** and press **Start** once. The live setup display will show download, dependency, configuration, and pairing phases. The first boot can take several minutes while the protected runtime is downloaded and installed.
+7. Confirm that the panel’s disk is persistent and that **Restart on crash** or an equivalent automatic-restart setting is enabled. Do not repeatedly stop and start during first boot.
+
+If Spaceify asks for a port, use the port assigned by Spaceify. Ordinary Telegram and WhatsApp operation does not require a public inbound webhook port, but the server must be allowed to make outbound HTTPS connections. If the panel provides a sleep or auto-suspend option, disable it for a bot that must remain online.
+
+### Generic panel checklist
+
+If your panel uses different names, look for these equivalent controls:
+
+| Needed control | Possible panel label |
+| --- | --- |
+| Server creation | Create Server, New Application, Deploy App |
+| Node.js runtime | NodeJS, Node.js Egg, Runtime, Docker Image |
+| File upload | Files, File Manager, Upload |
+| Startup command | Startup, Command, Entrypoint, Run Command |
+| Live output | Console, Terminal, Logs |
+| Persistent storage | Disk, Volume, Filesystem, Storage |
+| Automatic recovery | Restart on crash, Auto-restart, Restart policy |
+
+Never use a server type that is only a static website, serverless function, or short-lived worker. Omega needs a long-running Node.js process with writable persistent storage for WhatsApp authentication, settings, and media work.
 
 ## Deploy on a VPS
 
@@ -123,3 +154,8 @@ The stable release manifest is published at:
 The public distribution repository is:
 
 <https://github.com/pappy999666-dotcom/omega-customer-distribution>
+
+## Hosting references
+
+[1]: https://zampto.net/create-server "Zampto official server-creation guide"
+[2]: https://www.hidencloud.com/service/free-node-hosting "HidenCloud official free Node.js hosting page"

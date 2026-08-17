@@ -10,7 +10,7 @@ Download [`index.js`](./index.js) and upload it to the root of a Node.js server 
 node index.js
 ```
 
-Start the server and wait for the live setup display. The bootstrap downloads the protected stable runtime, verifies the release hashes, installs production dependencies, and starts the bot. You do not need a Pterodactyl API token or a source-code archive.
+Start the server and wait for the live setup display. The bootstrap downloads the protected stable runtime, verifies the release hashes, installs production dependencies, and starts the bot. You do not need a hosting-provider API token or a source-code archive.
 
 ## First-run setup
 
