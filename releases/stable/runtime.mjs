@@ -30724,7 +30724,7 @@ var require_package = __commonJS({
   "package.json"(exports, module) {
     module.exports = {
       name: "@workspace/wa-bridge",
-      version: "1.0.0",
+      version: "1.2.0",
       description: "Telegram \u2194 WhatsApp Automation Bridge \u2014 Production-Grade Multi-Device Control Center",
       type: "module",
       main: "dist/index.js",
@@ -47250,26 +47250,33 @@ function installationFilePath() {
 }
 function loadOrCreateInstallationIdentity() {
   const filePath = installationFilePath();
+  const agentVersion = process.env.OMEGA_AGENT_VERSION?.trim() || "1.2.0";
+  const persist = (identity) => {
+    fs32.mkdirSync(path29.dirname(filePath), { recursive: true, mode: 448 });
+    const temporary = `${filePath}.${process.pid}.tmp`;
+    fs32.writeFileSync(temporary, `${JSON.stringify(identity, null, 2)}\\n`, { mode: 384 });
+    fs32.renameSync(temporary, filePath);
+    return identity;
+  };
   try {
     const value = JSON.parse(fs32.readFileSync(filePath, "utf8"));
-    if (value.clientId && value.deploymentId && value.workspaceId) return value;
+    if (value.clientId && value.deploymentId && value.workspaceId) {
+      const identity = value;
+      if (identity.agentVersion !== agentVersion) return persist({ ...identity, agentVersion });
+      return identity;
+    }
   } catch {
   }
-  const identity = {
+  return persist({
     clientId: process.env.OMEGA_CLIENT_ID?.trim() || crypto16.randomUUID(),
     deploymentId: process.env.OMEGA_DEPLOYMENT_ID?.trim() || crypto16.randomUUID(),
     workspaceId: process.env.OMEGA_WORKSPACE_ID?.trim() || crypto16.randomUUID(),
     licenseId: "PENDING_CORE_REGISTRATION",
     protocolVersion: 1,
-    agentVersion: process.env.OMEGA_AGENT_VERSION?.trim() || "1.0.0",
+    agentVersion,
     createdAt: (/* @__PURE__ */ new Date()).toISOString(),
     status: "OFFLINE"
-  };
-  fs32.mkdirSync(path29.dirname(filePath), { recursive: true, mode: 448 });
-  const temporary = `${filePath}.${process.pid}.tmp`;
-  fs32.writeFileSync(temporary, `${JSON.stringify(identity, null, 2)}\\n`, { mode: 384 });
-  fs32.renameSync(temporary, filePath);
-  return identity;
+  });
 }
 async function startPterodactylClientBridge() {
   if (runtime) return;
