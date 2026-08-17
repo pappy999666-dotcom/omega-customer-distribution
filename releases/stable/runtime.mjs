@@ -4246,7 +4246,7 @@ function unwrapMessage(raw) {
   let viewOnce = false;
   let ephemeral = false;
   let forwarded = false;
-  const path35 = [];
+  const path36 = [];
   const seen3 = /* @__PURE__ */ new Set();
   const MAX_DEPTH = 16;
   for (let i = 0; i < MAX_DEPTH; i++) {
@@ -4258,13 +4258,13 @@ function unwrapMessage(raw) {
     if (VIEW_ONCE_KEYS.includes(key2)) viewOnce = true;
     if (EPHEMERAL_KEYS.includes(key2)) ephemeral = true;
     if (FORWARD_KEYS.includes(key2)) forwarded = true;
-    path35.push(key2);
+    path36.push(key2);
     const node = current[key2];
     current = node?.message ?? node;
   }
   const mediaNode = current?.imageMessage ?? current?.videoMessage ?? current?.audioMessage ?? current?.stickerMessage ?? current?.documentMessage;
   if (mediaNode?.viewOnce === true || current?.viewOnce === true) viewOnce = true;
-  return { inner: current, viewOnce, ephemeral, forwarded, path: path35 };
+  return { inner: current, viewOnce, ephemeral, forwarded, path: path36 };
 }
 var WRAPPER_KEYS, VIEW_ONCE_KEYS, EPHEMERAL_KEYS, FORWARD_KEYS;
 var init_MessageUnwrapper = __esm({
@@ -12353,7 +12353,13 @@ async function requestVerification(userId2) {
     } catch {
     }
     if (!response2.ok) {
-      return { enabled: true, allowed: false, unavailable: true, reason: body.message || `Core verification failed (${response2.status}).` };
+      return {
+        enabled: true,
+        allowed: false,
+        unavailable: true,
+        ...Array.isArray(body.missingTargets) ? { missingTargets: body.missingTargets.filter((target) => typeof target === "string").slice(0, 8) } : {},
+        reason: body.message || `Core verification failed (${response2.status}).`
+      };
     }
     if (body.enabled !== true) return { enabled: false, allowed: true };
     return {
@@ -14365,13 +14371,14 @@ function confirmKeyboard(yesCallback, noCallback) {
     inline_keyboard: [[btn("\u2705 Confirm", yesCallback, "success"), btn("\u274C Cancel", noCallback, "danger")]]
   };
 }
-function settingsKeyboard(config2) {
+function settingsKeyboard(config2, customerRuntime = false) {
   return {
     inline_keyboard: [
       [btn("Change Prefix", "settings:prefix", "primary"), btn("Sticker Macros", "settings:macros", "primary")],
       // Global Sudo is a per-Telegram-user account setting — each user manages
       // their own list from their main hub (applies to every session they pair).
       [btn("\u{1F451} Global Sudo", "settings:globalsudo", "primary")],
+      ...customerRuntime ? [[btn("Redis Storage", "settings:redis", "primary")]] : [],
       [btn(`Notifications: ${config2?.notificationsEnabled === false ? "Off" : "On"}`, "settings:notifications", "primary")],
       [btn("Validation Hub", "bucket:status", "success")],
       [btn("Back", "menu:main", "primary")]
@@ -17298,6 +17305,35 @@ async function countKeys(redis, pattern) {
   return count;
 }
 async function redisHealth() {
+  let configured2 = false;
+  try {
+    configured2 = Boolean(
+      configuredRedisUrl() || process.env.REDIS_HOST?.trim() || /^(1|true|yes|on)$/iu.test(process.env.OMEGA_TUNNEL_ENABLED ?? "") || process.env.OMEGA_STORAGE_MODE?.trim() === "LOCAL" || process.env.OMEGA_ALLOW_LOCAL_REDIS?.trim() === "true"
+    );
+  } catch (error2) {
+    return {
+      status: "offline",
+      usedMemoryBytes: 0,
+      peakMemoryBytes: 0,
+      maxMemoryBytes: 0,
+      keys: 0,
+      allStatusClaims: 0,
+      allStatusCompleted: 0,
+      error: String(error2).slice(0, 160)
+    };
+  }
+  if (!configured2) {
+    return {
+      status: "not-configured",
+      usedMemoryBytes: 0,
+      peakMemoryBytes: 0,
+      maxMemoryBytes: 0,
+      keys: 0,
+      allStatusClaims: 0,
+      allStatusCompleted: 0,
+      error: "Optional Redis is not configured."
+    };
+  }
   try {
     const redis = getRedis();
     const [memory, keyCount, claims, completed] = await Promise.all([
@@ -17350,11 +17386,11 @@ async function mongoHealth() {
 }
 function diskHealth() {
   try {
-    const path35 = process.env.OMEGA_DISK_PATH?.trim() || "/";
-    const stat = fs12.statfsSync(path35);
+    const path36 = process.env.OMEGA_DISK_PATH?.trim() || "/";
+    const stat = fs12.statfsSync(path36);
     const totalBytes = Number(stat.blocks) * Number(stat.bsize);
     const freeBytes = Number(stat.bavail) * Number(stat.bsize);
-    return { path: path35, totalBytes, freeBytes, usedBytes: Math.max(0, totalBytes - freeBytes) };
+    return { path: path36, totalBytes, freeBytes, usedBytes: Math.max(0, totalBytes - freeBytes) };
   } catch {
     return { path: "/", totalBytes: 0, freeBytes: 0, usedBytes: 0 };
   }
@@ -17378,6 +17414,7 @@ var init_database_health = __esm({
   "src/services/database-health.ts"() {
     "use strict";
     init_queue();
+    init_redis_url();
     execFileAsync2 = promisify2(execFile2);
   }
 });
@@ -18007,7 +18044,7 @@ async function handleAdminPanel(ctx) {
     kv("Host platform:", `${process.platform}/${process.arch}`),
     "",
     "<b>DATABASES & STORAGE</b>",
-    kv("Redis:", database.redis.status === "online" ? "\u{1F7E2} Online" : "\u{1F534} Offline"),
+    kv("Redis:", database.redis.status === "online" ? "\u{1F7E2} Online" : database.redis.status === "not-configured" ? "\u{1F7E1} Optional / not configured" : "\u{1F534} Offline"),
     kv("Redis memory:", redisStorage),
     kv("Redis keys:", `${database.redis.keys} \xB7 peak ${formatBytes(database.redis.peakMemoryBytes)}`),
     kv("Allstatus claims:", `${database.redis.allStatusClaims} active \xB7 ${database.redis.allStatusCompleted} completed`),
@@ -18047,7 +18084,7 @@ async function handleAdminPanel(ctx) {
       ["Host", `${process.platform}/${process.arch}`]
     ] },
     { title: "Databases & Storage", columns: ["Metric", "Value"], rows: [
-      ["Redis", database.redis.status === "online" ? "Online" : "Offline"],
+      ["Redis", database.redis.status === "online" ? "Online" : database.redis.status === "not-configured" ? "Optional / not configured" : "Offline"],
       ["Redis memory", redisStorage],
       ["Redis keys", `${database.redis.keys} \xB7 peak ${formatBytes(database.redis.peakMemoryBytes)}`],
       ["All-status claims", `${database.redis.allStatusClaims} active \xB7 ${database.redis.allStatusCompleted} completed`],
@@ -21533,6 +21570,102 @@ var init_group_moderation = __esm({
   }
 });
 
+// src/services/customer-storage-config.ts
+var customer_storage_config_exports = {};
+__export(customer_storage_config_exports, {
+  clearCustomerRedisUrl: () => clearCustomerRedisUrl,
+  getCustomerRedisStatus: () => getCustomerRedisStatus,
+  setCustomerRedisUrl: () => setCustomerRedisUrl,
+  validateAndSetCustomerRedisUrl: () => validateAndSetCustomerRedisUrl
+});
+import fs19 from "node:fs";
+import path18 from "node:path";
+import { Redis as Redis3 } from "ioredis";
+function readEnvLines() {
+  try {
+    return fs19.readFileSync(ENV_PATH, "utf8").split(/\r?\n/u);
+  } catch {
+    return [];
+  }
+}
+function writeEnvLines(lines) {
+  fs19.writeFileSync(ENV_PATH, `${lines.filter(Boolean).join("\n")}
+`, { mode: 384 });
+}
+function persistRedisValue(value) {
+  const lines = readEnvLines().filter((line2) => {
+    const key2 = line2.match(/^([A-Z][A-Z0-9_]*)=/u)?.[1];
+    return !key2 || !REDIS_KEYS.has(key2);
+  });
+  if (value) lines.push(`REDIS_CLI_URL=${JSON.stringify(`redis-cli -u ${value}`)}`);
+  writeEnvLines(lines);
+}
+function redactedDisplay(value) {
+  try {
+    const parsed = new URL(value);
+    const scheme = parsed.protocol;
+    const host = parsed.hostname;
+    const port = parsed.port ? `:${parsed.port}` : "";
+    const db = parsed.pathname && parsed.pathname !== "/" ? parsed.pathname : "";
+    return `${scheme}//${host}${port}${db}`;
+  } catch {
+    return "configured";
+  }
+}
+function getCustomerRedisStatus() {
+  const raw = process.env.REDIS_URL?.trim() || process.env.REDIS_CLI_URL?.trim() || process.env.OMEGA_REDIS_URL?.trim();
+  if (!raw) return { configured: false, display: "Not configured \u2014 local commands remain available" };
+  try {
+    const url = normalizeRedisUrl(raw);
+    return { configured: true, display: redactedDisplay(url ?? raw) };
+  } catch {
+    return { configured: false, display: "Invalid configuration \u2014 send a new URL" };
+  }
+}
+function setCustomerRedisUrl(input2) {
+  const normalized = normalizeRedisUrl(input2);
+  if (!normalized) throw new Error("A Redis URL is required.");
+  process.env.REDIS_CLI_URL = `redis-cli -u ${normalized}`;
+  delete process.env.REDIS_URL;
+  delete process.env.OMEGA_REDIS_URL;
+  persistRedisValue(normalized);
+  return normalized;
+}
+async function validateAndSetCustomerRedisUrl(input2) {
+  const normalized = normalizeRedisUrl(input2);
+  if (!normalized) throw new Error("A Redis URL is required.");
+  const probe = new Redis3(normalized, {
+    lazyConnect: true,
+    connectTimeout: 5e3,
+    maxRetriesPerRequest: 0,
+    enableReadyCheck: false,
+    retryStrategy: () => null
+  });
+  try {
+    await probe.connect();
+    await probe.ping();
+  } finally {
+    probe.disconnect();
+  }
+  setCustomerRedisUrl(normalized);
+  return { display: redactedDisplay(normalized) };
+}
+function clearCustomerRedisUrl() {
+  delete process.env.REDIS_URL;
+  delete process.env.REDIS_CLI_URL;
+  delete process.env.OMEGA_REDIS_URL;
+  persistRedisValue(void 0);
+}
+var ENV_PATH, REDIS_KEYS;
+var init_customer_storage_config = __esm({
+  "src/services/customer-storage-config.ts"() {
+    "use strict";
+    init_redis_url();
+    ENV_PATH = path18.resolve(".env");
+    REDIS_KEYS = /* @__PURE__ */ new Set(["REDIS_URL", "REDIS_CLI_URL", "OMEGA_REDIS_URL"]);
+  }
+});
+
 // src/services/importer.ts
 var importer_exports = {};
 __export(importer_exports, {
@@ -21799,7 +21932,7 @@ function createBot() {
   bot.command("broadcast", ownerOnly(), async (ctx) => {
     const text2 = ctx.message.text.split(" ").slice(1).join(" ").trim();
     if (!text2) {
-      await ctx.reply(card("Parent Broadcast", "\u{1F4E1}", [["Usage", "/broadcast Your message"]], "Sends one message through Core to the owner of each active customer deployment."), { parse_mode: "HTML" });
+      await ctx.reply(card("Parent Broadcast", "\u{1F4E1}", [["Usage", "/broadcast Your message"]], "Sends one notice through Core to all registered Telegram users on active customer deployments."), { parse_mode: "HTML" });
       return;
     }
     const result = await dispatchParentBroadcast(text2);
@@ -21814,7 +21947,7 @@ function createBot() {
       return;
     }
     await ctx.reply(noticeCard("Restarting Customer Bot", "The panel process will restart now. Saved sessions and settings remain on disk.", "success"), { parse_mode: "HTML" });
-    setTimeout(() => process.exit(0), 350).unref();
+    setTimeout(() => process.kill(process.pid, "SIGTERM"), 350).unref();
   });
   bot.action("customer:restart", ownerOnly(), async (ctx) => {
     if (process.env.OMEGA_CUSTOMER_RUNTIME !== "true" && process.env.OMEGA_RUNTIME_ROLE !== "customer") {
@@ -21824,9 +21957,19 @@ function createBot() {
     }
     await ctx.answerCbQuery("Restarting customer bot\u2026").catch(() => {
     });
-    await ctx.editMessageText(noticeCard("Restarting Customer Bot", "The panel process will restart now. Saved sessions and settings remain on disk.", "success"), { parse_mode: "HTML" }).catch(() => {
+    await ctx.editMessageText(noticeCard("Restarting Customer Bot", "The panel process will shut down gracefully now. The panel will start it again after the old process exits.", "success"), { parse_mode: "HTML" }).catch(() => {
     });
-    setTimeout(() => process.exit(0), 350).unref();
+    setTimeout(() => process.kill(process.pid, "SIGTERM"), 350).unref();
+  });
+  bot.command(["redis", "storage"], ownerOnly(), async (ctx) => {
+    const customerRuntime = process.env.OMEGA_CUSTOMER_RUNTIME === "true" || process.env.OMEGA_RUNTIME_ROLE === "customer";
+    if (!customerRuntime) {
+      await ctx.reply(noticeCard("Unavailable", "Redis allocation is available only on customer deployments.", "warning"), { parse_mode: "HTML" });
+      return;
+    }
+    const { getCustomerRedisStatus: getCustomerRedisStatus2 } = await Promise.resolve().then(() => (init_customer_storage_config(), customer_storage_config_exports));
+    const status = getCustomerRedisStatus2();
+    await ctx.reply(card("Redis Storage", "\u{1F9F0}", [["Status", status.configured ? "Configured" : "Optional / not configured"], ["Endpoint", status.display]], "Use the Redis Storage button to set or clear the allocation. Accepted input: redis://\u2026 or redis-cli -u redis://\u2026. Send SKIP when the input screen is open to leave the current allocation unchanged."), { parse_mode: "HTML", reply_markup: { inline_keyboard: [[btn("\u2699\uFE0F Manage Redis", "settings:redis", "primary")], [btn("\u{1F519} Back", "menu:main", "primary")]] } });
   });
   bot.command("sessions", async (ctx) => {
     await handleSessionsList(ctx);
@@ -22008,6 +22151,21 @@ function createBot() {
     await processAdminIdeaReply(ctx);
     await processTutorialCommand(ctx);
     if (ctx.session?.awaitingTutorialCommand) return;
+    if (ctx.session?.awaitingRedisUrl) {
+      delete ctx.session.awaitingRedisUrl;
+      if (/^skip$/iu.test(text2.trim())) {
+        await ctx.reply(noticeCard("Redis Unchanged", "Redis allocation was skipped. Ordinary commands remain available.", "success"), { parse_mode: "HTML", reply_markup: backKeyboard("settings:redis") });
+        return;
+      }
+      try {
+        const { validateAndSetCustomerRedisUrl: validateAndSetCustomerRedisUrl2 } = await Promise.resolve().then(() => (init_customer_storage_config(), customer_storage_config_exports));
+        const saved = await validateAndSetCustomerRedisUrl2(text2.trim());
+        await ctx.reply(noticeCard("Redis Saved", `Redis allocation verified and saved as ${saved.display}. Queue workers will use it after the next graceful restart.`, "success"), { parse_mode: "HTML", reply_markup: backKeyboard("settings:redis") });
+      } catch (error2) {
+        await ctx.reply(noticeCard("Redis Not Saved", `The allocation was rejected: ${String(error2).slice(0, 220)}. Nothing was changed.`, "error"), { parse_mode: "HTML", reply_markup: backKeyboard("settings:redis") });
+      }
+      return;
+    }
     if (ctx.session?.awaitingDefaultSetting) {
       const setting = ctx.session.awaitingDefaultSetting;
       delete ctx.session.awaitingDefaultSetting;
@@ -25497,7 +25655,7 @@ Use <b>Tutorial</b> for provider instructions.`,
       const config2 = targetSessionId ? loadSessionConfig(ctx.telegramId, targetSessionId) : loadConfig(ctx.telegramId);
       await ctx.editMessageText(card("Settings", "\u2699\uFE0F", [["Prefix", config2.prefix], ["Prefix scope", targetSessionId ?? "Select one active session"]], "Choose what you want to configure."), {
         parse_mode: "HTML",
-        reply_markup: settingsKeyboard(config2)
+        reply_markup: settingsKeyboard(config2, process.env.OMEGA_CUSTOMER_RUNTIME === "true" || process.env.OMEGA_RUNTIME_ROLE === "customer")
       });
       return;
     }
@@ -25535,6 +25693,41 @@ Reply directly to a WhatsApp sticker with ${H.code(`${macroConfig.prefix || ""}s
       );
       return;
     }
+    if (sub === "redis" && !params[1]) {
+      const customerRuntime = process.env.OMEGA_CUSTOMER_RUNTIME === "true" || process.env.OMEGA_RUNTIME_ROLE === "customer";
+      if (!customerRuntime) {
+        await ctx.answerCbQuery("Redis allocation is available only on customer deployments.", { show_alert: true }).catch(() => {
+        });
+        return;
+      }
+      const { getCustomerRedisStatus: getCustomerRedisStatus2 } = await Promise.resolve().then(() => (init_customer_storage_config(), customer_storage_config_exports));
+      const status = getCustomerRedisStatus2();
+      await ctx.editMessageText(
+        card("Redis Storage", "\u{1F9F0}", [["Status", status.configured ? "Configured" : "Optional / not configured"], ["Endpoint", status.display]], "Redis is optional. Ordinary Telegram and WhatsApp commands continue without it. For bulk jobs, send a URL or the full command: redis-cli -u redis://default:password@host:port. The password is never shown back here."),
+        { parse_mode: "HTML", reply_markup: { inline_keyboard: [
+          [btn("\u2795 Set / Replace Redis", "settings:redis:set", "success")],
+          ...status.configured ? [[btn("\u{1F9F9} Clear Redis", "settings:redis:clear", "danger")]] : [],
+          [btn("\u{1F519} Back", "settings:menu", "primary")]
+        ] } }
+      );
+      return;
+    }
+    if (sub === "redis" && params[1] === "set") {
+      ctx.session.awaitingRedisUrl = true;
+      await ctx.editMessageText(
+        card("Set Redis Storage", "\u{1F9F0}", [["Accepted", "redis://\u2026 or redis-cli -u redis://\u2026"]], "Send the Redis URL or the complete redis-cli -u command. Send SKIP to cancel without changing the current allocation."),
+        { parse_mode: "HTML", reply_markup: backKeyboard("settings:redis") }
+      );
+      return;
+    }
+    if (sub === "redis" && params[1] === "clear") {
+      const { clearCustomerRedisUrl: clearCustomerRedisUrl2 } = await Promise.resolve().then(() => (init_customer_storage_config(), customer_storage_config_exports));
+      clearCustomerRedisUrl2();
+      await ctx.answerCbQuery("Redis cleared; ordinary commands remain available.").catch(() => {
+      });
+      await ctx.editMessageText(noticeCard("Redis Cleared", "The customer runtime will continue in optional local mode. Restart only when you want queue workers to reconnect.", "success"), { parse_mode: "HTML", reply_markup: backKeyboard("settings:menu") });
+      return;
+    }
     if (sub === "globalsudo" && (params[1] === "add" || params[1] === "rm")) {
       ctx.session.awaitingPermissionInput = true;
       ctx.session.pendingPermissionAction = `gs-${params[1]}`;
@@ -25563,7 +25756,7 @@ Reply directly to a WhatsApp sticker with ${H.code(`${macroConfig.prefix || ""}s
       const updated = loadConfig(ctx.telegramId);
       await ctx.editMessageText(card("Settings", "\u2699\uFE0F", [["Prefix", updated.prefix]], "Setting updated."), {
         parse_mode: "HTML",
-        reply_markup: settingsKeyboard(updated)
+        reply_markup: settingsKeyboard(updated, process.env.OMEGA_CUSTOMER_RUNTIME === "true" || process.env.OMEGA_RUNTIME_ROLE === "customer")
       });
       return;
     }
@@ -25685,7 +25878,7 @@ var init_bot = __esm({
 });
 
 // src/services/menu-canvas.ts
-import fs19 from "node:fs";
+import fs20 from "node:fs";
 import sharp2 from "sharp";
 function escapeXml(value) {
   return String(value ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&apos;");
@@ -25875,10 +26068,10 @@ async function generateMenuCanvas(options) {
 }
 async function resolveMenuMedia(options) {
   const configured2 = options.meta?.menuMedia;
-  if (configured2?.filePath && fs19.existsSync(configured2.filePath)) {
+  if (configured2?.filePath && fs20.existsSync(configured2.filePath)) {
     try {
       return {
-        buffer: fs19.readFileSync(configured2.filePath),
+        buffer: fs20.readFileSync(configured2.filePath),
         type: configured2.type,
         mimetype: configured2.mimeType,
         caption: options.caption
@@ -26033,23 +26226,23 @@ var init_private_mode_guard = __esm({
 });
 
 // src/services/a2v-store.ts
-import fs20 from "node:fs";
+import fs21 from "node:fs";
 import fsp4 from "node:fs/promises";
-import path18 from "node:path";
+import path19 from "node:path";
 function storeDir(telegramId, sessionId) {
-  return path18.join(sessionDir(telegramId, sessionId), "a2v");
+  return path19.join(sessionDir(telegramId, sessionId), "a2v");
 }
 function recordPath(telegramId, sessionId) {
-  return path18.join(storeDir(telegramId, sessionId), "record.json");
+  return path19.join(storeDir(telegramId, sessionId), "record.json");
 }
 function componentPath(telegramId, sessionId, kind) {
-  return path18.join(storeDir(telegramId, sessionId), kind === "video" ? "video.mp4" : "audio.source");
+  return path19.join(storeDir(telegramId, sessionId), kind === "video" ? "video.mp4" : "audio.source");
 }
 async function loadA2V(telegramId, sessionId) {
   try {
     const raw = JSON.parse(await fsp4.readFile(recordPath(telegramId, sessionId), "utf8"));
-    const validVideo = Boolean(raw.videoPath && fs20.existsSync(raw.videoPath));
-    const validAudio = Boolean(raw.audioPath && fs20.existsSync(raw.audioPath));
+    const validVideo = Boolean(raw.videoPath && fs21.existsSync(raw.videoPath));
+    const validAudio = Boolean(raw.audioPath && fs21.existsSync(raw.audioPath));
     if (raw.expiresAt <= Date.now() || !validVideo && !validAudio) {
       await clearA2V(telegramId, sessionId);
       return null;
@@ -26072,8 +26265,8 @@ async function saveComponent(telegramId, sessionId, sourcePath, sizeBytes, kind)
   await fsp4.copyFile(sourcePath, temp);
   await fsp4.rename(temp, target);
   const record = {
-    ...existing?.videoPath && fs20.existsSync(existing.videoPath) ? { videoPath: existing.videoPath } : {},
-    ...existing?.audioPath && fs20.existsSync(existing.audioPath) ? { audioPath: existing.audioPath } : {},
+    ...existing?.videoPath && fs21.existsSync(existing.videoPath) ? { videoPath: existing.videoPath } : {},
+    ...existing?.audioPath && fs21.existsSync(existing.audioPath) ? { audioPath: existing.audioPath } : {},
     savedAt: Date.now(),
     expiresAt: Date.now() + RETENTION_MS,
     sizeBytes
@@ -26090,7 +26283,7 @@ function saveA2VAudio(telegramId, sessionId, sourcePath, sizeBytes) {
   return saveComponent(telegramId, sessionId, sourcePath, sizeBytes, "audio");
 }
 async function clearA2V(telegramId, sessionId) {
-  const existed = fs20.existsSync(recordPath(telegramId, sessionId)) || fs20.existsSync(storeDir(telegramId, sessionId));
+  const existed = fs21.existsSync(recordPath(telegramId, sessionId)) || fs21.existsSync(storeDir(telegramId, sessionId));
   await fsp4.rm(storeDir(telegramId, sessionId), { recursive: true, force: true });
   return existed;
 }
@@ -26106,9 +26299,9 @@ var init_a2v_store = __esm({
 // src/whatsapp/commands/sticker-media.ts
 import sharp3 from "sharp";
 import { execFile as execFile3 } from "node:child_process";
-import { promises as fs21 } from "node:fs";
+import { promises as fs22 } from "node:fs";
 import os2 from "node:os";
-import path19 from "node:path";
+import path20 from "node:path";
 import { promisify as promisify3 } from "node:util";
 async function acquireStickerSlot() {
   if (activeStickerConversions >= MAX_CONCURRENT_STICKER_CONVERSIONS) {
@@ -26164,15 +26357,15 @@ async function encodeAnimatedSticker(source, options = {}) {
   }
   let root;
   try {
-    root = await fs21.mkdtemp(path19.join(os2.tmpdir(), `omega-sticker-${safeToken(options.sessionId)}-${safeToken(options.jobId)}-`));
+    root = await fs22.mkdtemp(path20.join(os2.tmpdir(), `omega-sticker-${safeToken(options.sessionId)}-${safeToken(options.jobId)}-`));
   } catch (error2) {
     release();
     throw error2;
   }
-  const inputPath = path19.join(root, `input${extensionFor2(options.inputExtension)}`);
-  const outputPath = path19.join(root, "output.webp");
+  const inputPath = path20.join(root, `input${extensionFor2(options.inputExtension)}`);
+  const outputPath = path20.join(root, "output.webp");
   try {
-    await fs21.writeFile(inputPath, source, { mode: 384 });
+    await fs22.writeFile(inputPath, source, { mode: 384 });
     let lastBytes = 0;
     const profiles = [
       // Start at full resolution and high quality. Reduce frame rate before
@@ -26186,7 +26379,7 @@ async function encodeAnimatedSticker(source, options = {}) {
       { fps: 8, size: 360, quality: 76 }
     ];
     for (const profile of profiles) {
-      await fs21.rm(outputPath, { force: true });
+      await fs22.rm(outputPath, { force: true });
       try {
         await execFileAsync3(ffmpeg, [
           "-hide_banner",
@@ -26213,16 +26406,16 @@ async function encodeAnimatedSticker(source, options = {}) {
           outputPath
         ], { timeout: 18e4, maxBuffer: 2 * 1024 * 1024 });
       } catch (error2) {
-        const stat = await fs21.stat(outputPath).catch(() => null);
+        const stat = await fs22.stat(outputPath).catch(() => null);
         if (!stat?.size) throw new Error(`FFmpeg animation conversion failed: ${String(error2).slice(0, 240)}`);
       }
-      const output2 = await fs21.readFile(outputPath);
+      const output2 = await fs22.readFile(outputPath);
       lastBytes = output2.length;
       if (lastBytes <= MAX_STICKER_BYTES && isAnimatedWebP(output2)) return output2;
     }
     throw new Error(lastBytes > MAX_STICKER_BYTES ? `Animated media remains too large after adaptive encoding (${Math.ceil(lastBytes / 1024)} KB).` : "FFmpeg produced a WebP that is not animated.");
   } finally {
-    await fs21.rm(root, { recursive: true, force: true }).catch(() => void 0);
+    await fs22.rm(root, { recursive: true, force: true }).catch(() => void 0);
     release();
   }
 }
@@ -26453,7 +26646,7 @@ __export(tg_sticker_exports, {
   resolvePostMedia: () => resolvePostMedia,
   telegramRetryAfterSeconds: () => telegramRetryAfterSeconds
 });
-import path20 from "node:path";
+import path21 from "node:path";
 function parseTgLink(raw) {
   const trimmed = (raw || "").trim();
   if (!trimmed) return null;
@@ -26652,7 +26845,7 @@ async function convertPackSticker(pack, sticker, options) {
     throw new Error("Telegram could not resolve the sticker file.");
   }
   const rawBuffer = await downloadFile(file.file_path, file.file_size);
-  const ext = path20.extname(file.file_path).toLowerCase();
+  const ext = path21.extname(file.file_path).toLowerCase();
   const stickerBuffer = ext === ".webm" || ext === ".mp4" || pack.is_video || sticker.type === "video" ? await videoToSticker(rawBuffer, ext || ".webm", options.sessionId) : await staticToSticker(rawBuffer);
   validateWebP(stickerBuffer);
   const finalBuffer = addStickerMetadata(stickerBuffer, options.packname || "PAPPY", options.author || "OMEGA");
@@ -27242,7 +27435,7 @@ var init_CaptchaSolver = __esm({
 });
 
 // src/media/validation.ts
-import fs22 from "node:fs/promises";
+import fs23 from "node:fs/promises";
 function isHtmlishBuffer(buf) {
   if (!buf || buf.length < 8) return false;
   const head = buf.subarray(0, Math.min(buf.length, 4096)).toString("latin1");
@@ -27298,7 +27491,7 @@ function sniffMedia(buf) {
 async function validateMediaFile(filePath, expected) {
   let fd;
   try {
-    fd = await fs22.open(filePath, "r");
+    fd = await fs23.open(filePath, "r");
   } catch {
     return { valid: false, reason: "file unreadable" };
   }
@@ -27334,9 +27527,9 @@ var init_validation = __esm({
 });
 
 // src/media/DownloadManager.ts
-import fs23 from "node:fs";
+import fs24 from "node:fs";
 import fsp5 from "node:fs/promises";
-import path21 from "node:path";
+import path22 from "node:path";
 import { createHash as createHash2, randomUUID } from "node:crypto";
 import axios from "axios";
 import PQueue2 from "p-queue";
@@ -27385,7 +27578,7 @@ function resolveFfmpegPath() {
   if (process.env.FFMPEG_PATH) return process.env.FFMPEG_PATH;
   for (const candidate of ["/usr/bin/ffmpeg", "/usr/local/bin/ffmpeg", "/bin/ffmpeg", "/opt/homebrew/bin/ffmpeg"]) {
     try {
-      if (fs23.existsSync(candidate)) return candidate;
+      if (fs24.existsSync(candidate)) return candidate;
     } catch {
     }
   }
@@ -27395,13 +27588,13 @@ function resolveCookiesFile() {
   const envPath = process.env.YTDLP_COOKIES?.trim() || process.env.YOUTUBE_COOKIES_FILE?.trim();
   if (envPath) {
     try {
-      if (fs23.existsSync(envPath)) return envPath;
+      if (fs24.existsSync(envPath)) return envPath;
     } catch {
     }
   }
-  const platformPath = path21.join(WORKSPACE_ROOT, "_platform", "cookies.txt");
+  const platformPath = path22.join(WORKSPACE_ROOT, "_platform", "cookies.txt");
   try {
-    return fs23.existsSync(platformPath) ? platformPath : void 0;
+    return fs24.existsSync(platformPath) ? platformPath : void 0;
   } catch {
     return void 0;
   }
@@ -27598,7 +27791,7 @@ var init_DownloadManager = __esm({
     SEARCH_LIMIT = 5;
     MAX_MEDIA_QUEUE = 80;
     INNERTUBE_STREAM_TIMEOUT_MS = 12e4;
-    TEMP_ROOT = path21.join(WORKSPACE_ROOT, "_platform", "media");
+    TEMP_ROOT = path22.join(WORKSPACE_ROOT, "_platform", "media");
     BING_URL = "https://www.bing.com/images/search";
     PINTEREST_RESOURCE = "https://www.pinterest.com/resource/BaseSearchResource/get/";
     UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36";
@@ -27626,7 +27819,7 @@ var init_DownloadManager = __esm({
         this.cookiesFile = resolveCookiesFile();
         this.captchaSolver = opts?.captchaSolver ?? getCaptchaSolver();
         this.fetchImpl = opts?.fetchImpl ?? fetch;
-        fs23.mkdirSync(this.tempDir, { recursive: true });
+        fs24.mkdirSync(this.tempDir, { recursive: true });
       }
       /**
        * Admit expensive external work through the singleton queue. This protects
@@ -27656,7 +27849,7 @@ var init_DownloadManager = __esm({
           const entries = await fsp5.readdir(this.tempDir);
           for (const name of entries) {
             try {
-              const st = await fsp5.stat(path21.join(this.tempDir, name));
+              const st = await fsp5.stat(path22.join(this.tempDir, name));
               if (st.isFile()) {
                 files++;
                 bytes += st.size;
@@ -27670,7 +27863,7 @@ var init_DownloadManager = __esm({
       }
       // ── Temp file lifecycle ──────────────────────────────────
       tempPath(ext) {
-        return path21.join(this.tempDir, `${Date.now()}-${randomUUID().slice(0, 8)}.${ext}`);
+        return path22.join(this.tempDir, `${Date.now()}-${randomUUID().slice(0, 8)}.${ext}`);
       }
       /** Remove a temp file (never throws). */
       static async cleanup(paths) {
@@ -27689,7 +27882,7 @@ var init_DownloadManager = __esm({
           const entries = await fsp5.readdir(this.tempDir);
           const now3 = Date.now();
           for (const name of entries) {
-            const full = path21.join(this.tempDir, name);
+            const full = path22.join(this.tempDir, name);
             try {
               const st = await fsp5.stat(full);
               if (st.isFile() && now3 - st.mtimeMs > olderThanMs) {
@@ -28010,12 +28203,12 @@ var init_DownloadManager = __esm({
         const finalArgs = { ...args };
         const started = Date.now();
         let attemptNo = 0;
-        let outPath = path21.join(this.tempDir, `${token2}.${ext}`);
+        let outPath = path22.join(this.tempDir, `${token2}.${ext}`);
         const attemptPaths = [];
         try {
           await this.withRetry(`download (${format})`, () => {
             attemptNo += 1;
-            outPath = path21.join(this.tempDir, `${token2}-${attemptNo}.${ext}`);
+            outPath = path22.join(this.tempDir, `${token2}-${attemptNo}.${ext}`);
             attemptPaths.push(outPath);
             return this.withTimeout(
               this.enqueueWork(() => this.runYtDlp(url, { ...finalArgs, output: outPath }), "Download"),
@@ -28028,7 +28221,7 @@ var init_DownloadManager = __esm({
             const solvedToken = await this.solveFor(url).catch(() => void 0);
             if (solvedToken) {
               attemptNo += 1;
-              const assistedPath = path21.join(this.tempDir, `${token2}-assist-${attemptNo}.${ext}`);
+              const assistedPath = path22.join(this.tempDir, `${token2}-assist-${attemptNo}.${ext}`);
               attemptPaths.push(assistedPath);
               try {
                 await this.withTimeout(
@@ -28038,7 +28231,7 @@ var init_DownloadManager = __esm({
                 );
                 outPath = assistedPath;
                 await _DownloadManager.cleanup(attemptPaths.filter((p) => p !== assistedPath));
-                logger.info("[Media] solver-assisted download succeeded", { file: path21.basename(assistedPath) });
+                logger.info("[Media] solver-assisted download succeeded", { file: path22.basename(assistedPath) });
               } catch (assistErr) {
                 logger.warn("[Media] solver-assisted retry failed \u2014 stopping with the original bot-check error", {
                   err: String(assistErr)
@@ -28055,7 +28248,7 @@ var init_DownloadManager = __esm({
             throw err;
           }
         }
-        if (!fs23.existsSync(outPath)) {
+        if (!fs24.existsSync(outPath)) {
           throw new MediaDownloadError("Download finished but produced no file.", "download-failed");
         }
         const stat = await fsp5.stat(outPath);
@@ -28107,7 +28300,7 @@ var init_DownloadManager = __esm({
           kind,
           bytes: stat.size,
           ms: Date.now() - started,
-          file: path21.basename(outPath)
+          file: path22.basename(outPath)
         });
         return [out];
       }
@@ -28207,7 +28400,7 @@ var init_DownloadManager = __esm({
           }
           const ext = extFor(kind, contentType, kind === "image" ? "jpg" : kind === "video" ? "mp4" : kind === "audio" ? "mp3" : "bin");
           outPath = this.tempPath(ext);
-          await pipeline(res.data, fs23.createWriteStream(outPath));
+          await pipeline(res.data, fs24.createWriteStream(outPath));
           const stat = await fsp5.stat(outPath);
           if (stat.size === 0) {
             await _DownloadManager.cleanup([outPath]);
@@ -28239,7 +28432,7 @@ var init_DownloadManager = __esm({
             );
           }
           const mime = sig?.mime ?? (contentType || this.mimetypeFor(realKind, realExt));
-          const fileName = `${safeName(path21.basename(url.split("?")[0] ?? ""), "media") || "media"}.${realExt}`;
+          const fileName = `${safeName(path22.basename(url.split("?")[0] ?? ""), "media") || "media"}.${realExt}`;
           return {
             kind: realKind,
             filePath: outPath,
@@ -28735,7 +28928,7 @@ ${stderr}`;
 });
 
 // src/media/DeliveryManager.ts
-import fs24 from "node:fs/promises";
+import fs25 from "node:fs/promises";
 function isMp4Media(media) {
   const mime = (media.mimetype ?? "").toLowerCase();
   if (mime.startsWith("video/mp4") || mime === "video/x-m4v") return true;
@@ -28788,11 +28981,11 @@ async function withMediaSendTimeout(promise, timeoutMs2 = MEDIA_SEND_TIMEOUT_MS)
 }
 async function loadBuffer(item) {
   const buffer = item.buffer ?? (item.filePath ? await (async () => {
-    const stat = await fs24.stat(item.filePath);
+    const stat = await fs25.stat(item.filePath);
     if (stat.size > MAX_SEND_BUFFER) {
       throw new Error(`File is ${(stat.size / 1024 / 1024).toFixed(1)} MB \u2014 too large to send.`);
     }
-    return fs24.readFile(item.filePath);
+    return fs25.readFile(item.filePath);
   })() : null);
   if (!buffer || buffer.byteLength === 0) throw new Error("Media source is empty.");
   const signature = sniffMedia(buffer);
@@ -28811,7 +29004,7 @@ async function buildContent2(item, buffer) {
       let thumb = null;
       if (item.thumbnailPath) {
         try {
-          const t = await fs24.readFile(item.thumbnailPath);
+          const t = await fs25.readFile(item.thumbnailPath);
           if (t.byteLength <= 4 * 1024 * 1024) thumb = t;
         } catch {
         }
@@ -28972,7 +29165,7 @@ var init_DeliveryManager = __esm({
         for (const p of paths) {
           if (!p) continue;
           try {
-            await fs24.unlink(p);
+            await fs25.unlink(p);
           } catch {
           }
         }
@@ -31252,7 +31445,7 @@ var require_package = __commonJS({
   "package.json"(exports, module) {
     module.exports = {
       name: "@workspace/wa-bridge",
-      version: "1.2.12",
+      version: "1.2.14",
       description: "Telegram \u2194 WhatsApp Automation Bridge \u2014 Production-Grade Multi-Device Control Center",
       type: "module",
       main: "dist/index.js",
@@ -31790,16 +31983,16 @@ var init_actions = __esm({
 });
 
 // src/whatsapp/anti-system/pending-restores.ts
-import fs25 from "fs";
-import path22 from "path";
+import fs26 from "fs";
+import path23 from "path";
 function restorePath(sessionId, telegramId) {
-  return path22.join(sessionDir(telegramId, sessionId), "pending-restores.json");
+  return path23.join(sessionDir(telegramId, sessionId), "pending-restores.json");
 }
 function loadAll(sessionId, telegramId) {
   const p = restorePath(sessionId, telegramId);
-  if (!fs25.existsSync(p)) return [];
+  if (!fs26.existsSync(p)) return [];
   try {
-    return JSON.parse(fs25.readFileSync(p, "utf8"));
+    return JSON.parse(fs26.readFileSync(p, "utf8"));
   } catch (err) {
     logger.warn("[PendingRestores] Failed to parse, resetting", { err: String(err) });
     return [];
@@ -31807,8 +32000,8 @@ function loadAll(sessionId, telegramId) {
 }
 function saveAll(sessionId, telegramId, restores) {
   const p = restorePath(sessionId, telegramId);
-  fs25.mkdirSync(path22.dirname(p), { recursive: true });
-  fs25.writeFileSync(p, JSON.stringify(restores, null, 2), "utf8");
+  fs26.mkdirSync(path23.dirname(p), { recursive: true });
+  fs26.writeFileSync(p, JSON.stringify(restores, null, 2), "utf8");
 }
 function addPendingRestore(sessionId, telegramId, entry) {
   const restores = loadAll(sessionId, telegramId);
@@ -34743,9 +34936,9 @@ function defaultDictionary() {
     const wordListModule = require3("word-list");
     const file = typeof wordListModule === "string" ? wordListModule : wordListModule.default;
     if (!file) return /* @__PURE__ */ new Set();
-    const fs39 = require3("node:fs");
+    const fs40 = require3("node:fs");
     return new Set(
-      fs39.readFileSync(file, "utf8").split(/\r?\n/u).map((word) => word.trim().toLowerCase()).filter((word) => /^[a-z]+$/u.test(word) && word.length > 1)
+      fs40.readFileSync(file, "utf8").split(/\r?\n/u).map((word) => word.trim().toLowerCase()).filter((word) => /^[a-z]+$/u.test(word) && word.length > 1)
     );
   } catch {
     return /* @__PURE__ */ new Set();
@@ -36453,10 +36646,10 @@ var init_poll_engine = __esm({
 });
 
 // src/whatsapp/games/poll-engine/persistence.ts
-import fs26 from "fs";
-import path23 from "path";
+import fs27 from "fs";
+import path24 from "path";
 function gamesFilePath(telegramId, sessionId) {
-  return path23.join(sessionDir(telegramId, sessionId), "poll-games.json");
+  return path24.join(sessionDir(telegramId, sessionId), "poll-games.json");
 }
 function scopeKey4(snapshot) {
   return `${snapshot.scope.sessionId}:${snapshot.scope.chatJid}:${snapshot.type}`;
@@ -36464,8 +36657,8 @@ function scopeKey4(snapshot) {
 function loadFile(telegramId, sessionId) {
   try {
     const p = gamesFilePath(telegramId, sessionId);
-    if (!fs26.existsSync(p)) return {};
-    const parsed = JSON.parse(fs26.readFileSync(p, "utf8"));
+    if (!fs27.existsSync(p)) return {};
+    const parsed = JSON.parse(fs27.readFileSync(p, "utf8"));
     return parsed ?? {};
   } catch (err) {
     logger.warn("[PollGame] snapshot read failed", { sessionId, err: String(err) });
@@ -36475,10 +36668,10 @@ function loadFile(telegramId, sessionId) {
 function writeFile(telegramId, sessionId, data) {
   try {
     const p = gamesFilePath(telegramId, sessionId);
-    fs26.mkdirSync(path23.dirname(p), { recursive: true });
+    fs27.mkdirSync(path24.dirname(p), { recursive: true });
     const tmp = `${p}.tmp-${process.pid}`;
-    fs26.writeFileSync(tmp, JSON.stringify(data, null, 2));
-    fs26.renameSync(tmp, p);
+    fs27.writeFileSync(tmp, JSON.stringify(data, null, 2));
+    fs27.renameSync(tmp, p);
   } catch (err) {
     logger.warn("[PollGame] snapshot write failed", { sessionId, err: String(err) });
   }
@@ -36499,7 +36692,7 @@ function loadPollGameSnapshots(telegramId, sessionId) {
 function clearPollGameSnapshots(telegramId, sessionId) {
   try {
     const p = gamesFilePath(telegramId, sessionId);
-    if (fs26.existsSync(p)) fs26.rmSync(p, { force: true });
+    if (fs27.existsSync(p)) fs27.rmSync(p, { force: true });
   } catch {
   }
 }
@@ -36635,11 +36828,11 @@ __export(qc_sticker_exports, {
   segmentGraphemes: () => segmentGraphemes
 });
 import sharp5 from "sharp";
-import fs27 from "node:fs";
+import fs28 from "node:fs";
 function resolveEmojiFontFamily() {
   if (emojiFontResolved) return cachedEmojiFontFamily;
   emojiFontResolved = true;
-  cachedEmojiFontFamily = EMOJI_FONT_CANDIDATES.find((candidate) => candidate.paths.some((fontPath) => fs27.existsSync(fontPath)))?.family ?? null;
+  cachedEmojiFontFamily = EMOJI_FONT_CANDIDATES.find((candidate) => candidate.paths.some((fontPath) => fs28.existsSync(fontPath)))?.family ?? null;
   return cachedEmojiFontFamily;
 }
 function emojiFontFamily() {
@@ -37114,8 +37307,18 @@ __export(event_handlers_exports, {
   unregisterSessionOwner: () => unregisterSessionOwner
 });
 import fsp8 from "node:fs/promises";
-import path24 from "path";
+import path25 from "path";
 import crypto13 from "crypto";
+function explainWhatsAppOperationError(error2, operation) {
+  const raw = String(error2);
+  if (/account_reachout_restricted/iu.test(raw)) {
+    return `WhatsApp rejected ${operation} because this account currently has an outbound reach-out restriction (account_reachout_restricted). This is an account-level WhatsApp restriction, not a pairing or local Redis failure; receiving commands can remain healthy while this action is blocked. Retry later or use another WhatsApp account.`;
+  }
+  if (/rate.overlimit|rate.?limit|429/iu.test(raw)) {
+    return `WhatsApp rate-limited ${operation}. The session remains connected; wait for the cooldown before retrying.`;
+  }
+  return raw;
+}
 function logForensicLatency(fields) {
   if (!FORENSIC_LATENCY_ENABLED) return;
   const totalMs = Number(fields.totalMs);
@@ -38498,12 +38701,13 @@ async function processMessageWithConfig(sessionId, telegramId, msg, socket, repl
     const gameAction = gameManager.hasActive({ sessionId, chatJid: groupJid }) && (command === "join" || command === "ttt");
     const publicAllowed = config2.publicMode && publicOnlyCommands.has(command) || gameAction;
     if (!pairAlways && !publicAllowed) {
-      logger.warn("[EventHandler] Silently ignored unauthorized WhatsApp command", {
+      logger.warn("[EventHandler] Denied unauthorized WhatsApp command", {
         sessionId,
         command,
         sender: normalizeWhatsAppNumber(senderJid),
         mode: config2.publicMode ? "public (pair/help/menu only)" : "private"
       });
+      await reply(warningCard("ACCESS NOT ALLOCATED", "This WhatsApp bot is restricted to its owner and approved sudo users. Ask the owner to allocate access, then try again."));
       return;
     }
   }
@@ -38566,8 +38770,8 @@ async function processMessageWithConfig(sessionId, telegramId, msg, socket, repl
       const media = await extractMedia();
       if (media) {
         const filename = `idea_${Date.now()}_${Math.floor(Math.random() * 1e3)}.${media.mimeType.split("/")[1]}`;
-        const filePath = path24.join(process.cwd(), "workspaces", "_platform", "media", filename);
-        await fsp8.mkdir(path24.dirname(filePath), { recursive: true });
+        const filePath = path25.join(process.cwd(), "workspaces", "_platform", "media", filename);
+        await fsp8.mkdir(path25.dirname(filePath), { recursive: true });
         await fsp8.writeFile(filePath, media.buffer);
         attachments.push({ type: media.type, filePath, mimeType: media.mimeType });
       }
@@ -38920,7 +39124,7 @@ ${config2.prefix}autopromo off`));
         const invite = await socket.groupInviteCode(created.id);
         await reply(successCard("GROUP CREATED", `Created ${name}.`, [["JID", created.id], ["Invite", `https://chat.whatsapp.com/${invite}`], ["Picture", media?.type === "image" ? "HD original image" : "Not set"]]));
       } catch (err) {
-        await reply(errorCard("CREATE GROUP FAILED", String(err)));
+        await reply(errorCard("CREATE GROUP FAILED", explainWhatsAppOperationError(err, "group creation")));
       }
       break;
     }
@@ -39370,9 +39574,9 @@ Examples: Africa/Lagos, Europe/London, America/New_York`));
         await reply(warningCard("REPLY TO MEDIA", `Reply to a ${expected} with ${config2.prefix}${command}.`));
         break;
       }
-      const dir = path24.join(sessionDir(telegramId, sessionId), "menu-media");
+      const dir = path25.join(sessionDir(telegramId, sessionId), "menu-media");
       await fsp8.mkdir(dir, { recursive: true });
-      const filePath = path24.join(dir, `menu.${expected === "image" ? "jpg" : "mp4"}`);
+      const filePath = path25.join(dir, `menu.${expected === "image" ? "jpg" : "mp4"}`);
       await fsp8.writeFile(filePath, media.buffer);
       updateSessionMeta(telegramId, sessionId, { menuMedia: { type: expected, filePath, mimeType: media.mimeType } });
       await reply(successCard("MENU MEDIA SET", `Menus will now render with this ${expected}.`));
@@ -41702,8 +41906,8 @@ __export(socket_manager_exports, {
 });
 import makeWASocket from "@crysnovax/baileys";
 import * as Baileys from "@crysnovax/baileys";
-import fs28 from "node:fs";
-import path25 from "node:path";
+import fs29 from "node:fs";
+import path26 from "node:path";
 import { Boom } from "@hapi/boom";
 import P from "pino";
 import QRCode from "qrcode";
@@ -41936,7 +42140,7 @@ function hasRegisteredAuth(sessionId, telegramId) {
   if (!owner) return false;
   try {
     const authDir = sessionAuthDir(owner, sessionId);
-    const creds = JSON.parse(fs28.readFileSync(path25.join(authDir, "creds.json"), "utf8"));
+    const creds = JSON.parse(fs29.readFileSync(path26.join(authDir, "creds.json"), "utf8"));
     return creds.registered === true;
   } catch {
     return false;
@@ -42820,8 +43024,8 @@ __export(workspace_exports, {
   withWorkspaceMutationLock: () => withWorkspaceMutationLock,
   workspaceDir: () => workspaceDir
 });
-import fs29 from "fs";
-import path26 from "path";
+import fs30 from "fs";
+import path27 from "path";
 import { fileURLToPath as fileURLToPath3 } from "url";
 import os3 from "os";
 import { execFile as execFile4 } from "node:child_process";
@@ -42829,23 +43033,23 @@ import { promisify as promisify4 } from "node:util";
 function migrateLegacyWorkspaces() {
   try {
     const envLegacy = process.env.OMEGA_LEGACY_ROOT?.trim();
-    const defaultRoot = path26.join(os3.homedir(), ".omega-v1", "workspaces");
-    const candidates = envLegacy ? [path26.resolve(envLegacy)] : WORKSPACE_ROOT === defaultRoot ? [
-      path26.resolve(__dirname3, "../../../workspaces"),
+    const defaultRoot = path27.join(os3.homedir(), ".omega-v1", "workspaces");
+    const candidates = envLegacy ? [path27.resolve(envLegacy)] : WORKSPACE_ROOT === defaultRoot ? [
+      path27.resolve(__dirname3, "../../../workspaces"),
       // bundled build: artifacts/workspaces
-      path26.resolve(__dirname3, "../../workspaces")
+      path27.resolve(__dirname3, "../../workspaces")
       // dev/tsx: wa-bridge/workspaces
     ] : [];
     const legacy = candidates.find((c) => {
-      if (c === WORKSPACE_ROOT || !fs29.existsSync(c)) return false;
-      return fs29.readdirSync(c).filter((f) => f !== ".gitkeep").length > 0;
+      if (c === WORKSPACE_ROOT || !fs30.existsSync(c)) return false;
+      return fs30.readdirSync(c).filter((f) => f !== ".gitkeep").length > 0;
     });
     if (!legacy) return;
-    if (fs29.existsSync(WORKSPACE_ROOT) && fs29.readdirSync(WORKSPACE_ROOT).length > 0) return;
-    fs29.mkdirSync(WORKSPACE_ROOT, { recursive: true });
-    for (const entry of fs29.readdirSync(legacy)) {
+    if (fs30.existsSync(WORKSPACE_ROOT) && fs30.readdirSync(WORKSPACE_ROOT).length > 0) return;
+    fs30.mkdirSync(WORKSPACE_ROOT, { recursive: true });
+    for (const entry of fs30.readdirSync(legacy)) {
       if (entry === ".gitkeep") continue;
-      fs29.cpSync(path26.join(legacy, entry), path26.join(WORKSPACE_ROOT, entry), { recursive: true });
+      fs30.cpSync(path27.join(legacy, entry), path27.join(WORKSPACE_ROOT, entry), { recursive: true });
     }
     logger.warn(
       `[Workspace] Migrated session data from legacy in-repo path ${legacy} \u2192 ${WORKSPACE_ROOT}. Sessions are now stored outside the git repository and will survive git pull/reset/clean.`
@@ -42856,63 +43060,63 @@ function migrateLegacyWorkspaces() {
 }
 function ensurePrivatePath(p) {
   try {
-    if (fs29.existsSync(p)) fs29.chmodSync(p, 384);
+    if (fs30.existsSync(p)) fs30.chmodSync(p, 384);
   } catch {
   }
 }
 function atomicWriteJson2(p, data) {
-  fs29.mkdirSync(path26.dirname(p), { recursive: true, mode: 448 });
+  fs30.mkdirSync(path27.dirname(p), { recursive: true, mode: 448 });
   try {
-    fs29.chmodSync(path26.dirname(p), 448);
+    fs30.chmodSync(path27.dirname(p), 448);
   } catch {
   }
   const tmp = `${p}.tmp-${process.pid}`;
-  fs29.writeFileSync(tmp, JSON.stringify(data, null, 2), { mode: 384 });
+  fs30.writeFileSync(tmp, JSON.stringify(data, null, 2), { mode: 384 });
   try {
-    fs29.chmodSync(tmp, 384);
+    fs30.chmodSync(tmp, 384);
   } catch {
   }
-  fs29.renameSync(tmp, p);
+  fs30.renameSync(tmp, p);
   try {
-    fs29.chmodSync(p, 384);
+    fs30.chmodSync(p, 384);
   } catch {
   }
 }
 function workspaceDir(telegramId) {
-  return path26.join(WORKSPACE_ROOT, telegramId);
+  return path27.join(WORKSPACE_ROOT, telegramId);
 }
 function sessionDir(telegramId, sessionId) {
-  return path26.join(workspaceDir(telegramId), "sessions", sessionId);
+  return path27.join(workspaceDir(telegramId), "sessions", sessionId);
 }
 function sessionAuthDir(telegramId, sessionId) {
-  return path26.join(sessionDir(telegramId, sessionId), "auth");
+  return path27.join(sessionDir(telegramId, sessionId), "auth");
 }
 function sessionLogDir(telegramId, sessionId) {
-  return path26.join(sessionDir(telegramId, sessionId), "logs");
+  return path27.join(sessionDir(telegramId, sessionId), "logs");
 }
 function bucketPath(telegramId, bucket) {
-  return path26.join(workspaceDir(telegramId), "buckets", `${bucket}.json`);
+  return path27.join(workspaceDir(telegramId), "buckets", `${bucket}.json`);
 }
 function joinJobsPath(telegramId) {
-  return path26.join(workspaceDir(telegramId), "join-jobs.json");
+  return path27.join(workspaceDir(telegramId), "join-jobs.json");
 }
 function promotionJobsPath(telegramId) {
-  return path26.join(workspaceDir(telegramId), "promotion-jobs.json");
+  return path27.join(workspaceDir(telegramId), "promotion-jobs.json");
 }
 function promotionMediaDir(telegramId) {
-  const dir = path26.join(workspaceDir(telegramId), "promotion-media");
-  fs29.mkdirSync(dir, { recursive: true, mode: 448 });
+  const dir = path27.join(workspaceDir(telegramId), "promotion-media");
+  fs30.mkdirSync(dir, { recursive: true, mode: 448 });
   return dir;
 }
 function promotionMediaPath(telegramId, extension) {
   const safeExtension = String(extension || "bin").replace(/[^a-z0-9]/giu, "").slice(0, 8) || "bin";
-  return path26.join(promotionMediaDir(telegramId), `${Date.now()}-${process.pid}-${Math.random().toString(36).slice(2, 10)}.${safeExtension}`);
+  return path27.join(promotionMediaDir(telegramId), `${Date.now()}-${process.pid}-${Math.random().toString(36).slice(2, 10)}.${safeExtension}`);
 }
 function joinStatePath(telegramId) {
-  return path26.join(workspaceDir(telegramId), "join-state.json");
+  return path27.join(workspaceDir(telegramId), "join-state.json");
 }
 function masterGenerationPath(telegramId) {
-  return path26.join(workspaceDir(telegramId), "master-generation.json");
+  return path27.join(workspaceDir(telegramId), "master-generation.json");
 }
 function currentMasterGeneration(telegramId) {
   const value = readJsonFile(masterGenerationPath(telegramId), 1);
@@ -42929,7 +43133,7 @@ function normalizeCollectedLink(rawLink) {
   return match?.[1] ? `https://chat.whatsapp.com/${match[1]}` : input2.replace(/[?#].*$/u, "").replace(/\/$/u, "");
 }
 function configPath2(telegramId) {
-  return path26.join(workspaceDir(telegramId), "config.json");
+  return path27.join(workspaceDir(telegramId), "config.json");
 }
 function defaultConfig(telegramId) {
   return {
@@ -42980,7 +43184,7 @@ function defaultConfig(telegramId) {
 function initWorkspace(telegramId) {
   const dir = workspaceDir(telegramId);
   for (const sub of ["sessions", "buckets", "exports"]) {
-    fs29.mkdirSync(path26.join(dir, sub), { recursive: true });
+    fs30.mkdirSync(path27.join(dir, sub), { recursive: true });
   }
   const config2 = defaultConfig(telegramId);
   const workspace = {
@@ -43004,7 +43208,7 @@ function initWorkspace(telegramId) {
 }
 function loadWorkspace(telegramId) {
   const dir = workspaceDir(telegramId);
-  if (!fs29.existsSync(dir)) {
+  if (!fs30.existsSync(dir)) {
     return initWorkspace(telegramId);
   }
   const config2 = loadConfig(telegramId);
@@ -43027,10 +43231,10 @@ function loadWorkspace(telegramId) {
 }
 function loadConfig(telegramId) {
   const p = configPath2(telegramId);
-  if (!fs29.existsSync(p)) return defaultConfig(telegramId);
+  if (!fs30.existsSync(p)) return defaultConfig(telegramId);
   ensurePrivatePath(p);
   try {
-    const stored = JSON.parse(fs29.readFileSync(p, "utf8"));
+    const stored = JSON.parse(fs30.readFileSync(p, "utf8"));
     return { ...defaultConfig(telegramId), ...stored, sudoNumbers: stored.sudoNumbers ?? [], forceJoinTargets: stored.forceJoinTargets ?? [], ownerWaNumbers: stored.ownerWaNumbers ?? [], trustedAdminNumbers: stored.trustedAdminNumbers ?? [] };
   } catch {
     return defaultConfig(telegramId);
@@ -43046,7 +43250,7 @@ function updateConfig(telegramId, patch) {
   return updated;
 }
 function sessionConfigPath(telegramId, sessionId) {
-  return path26.join(sessionDir(telegramId, sessionId), "config.json");
+  return path27.join(sessionDir(telegramId, sessionId), "config.json");
 }
 function loadSessionConfig(telegramId, sessionId) {
   const base = loadConfig(telegramId);
@@ -43063,7 +43267,7 @@ function loadSessionConfig(telegramId, sessionId) {
   };
   const globalSudo = getGlobalSudoNumbers(telegramId);
   const mergedSudo = [.../* @__PURE__ */ new Set([...base.sudoNumbers ?? [], ...storedSudoNumbers(telegramId, sessionId, p), ...globalSudo])];
-  if (!fs29.existsSync(p)) {
+  if (!fs30.existsSync(p)) {
     return {
       ...base,
       ...isolatedDefaults,
@@ -43085,7 +43289,7 @@ function loadSessionConfig(telegramId, sessionId) {
   }
   try {
     ensurePrivatePath(p);
-    const stored = JSON.parse(fs29.readFileSync(p, "utf8"));
+    const stored = JSON.parse(fs30.readFileSync(p, "utf8"));
     return {
       ...base,
       ...isolatedDefaults,
@@ -43126,8 +43330,8 @@ function loadSessionConfig(telegramId, sessionId) {
 }
 function storedSudoNumbers(telegramId, sessionId, p) {
   try {
-    if (!fs29.existsSync(p)) return [];
-    const stored = JSON.parse(fs29.readFileSync(p, "utf8"));
+    if (!fs30.existsSync(p)) return [];
+    const stored = JSON.parse(fs30.readFileSync(p, "utf8"));
     return stored.sudoNumbers ?? [];
   } catch {
     return [];
@@ -43247,13 +43451,13 @@ function updateSessionConfig(telegramId, sessionId, patch) {
   return updated;
 }
 function sessionMetaPath(telegramId, sessionId) {
-  return path26.join(sessionDir(telegramId, sessionId), "meta.json");
+  return path27.join(sessionDir(telegramId, sessionId), "meta.json");
 }
 function saveSessionMeta(meta) {
   const dir = sessionDir(meta.telegramId, meta.sessionId);
-  fs29.mkdirSync(dir, { recursive: true });
-  fs29.mkdirSync(sessionAuthDir(meta.telegramId, meta.sessionId), { recursive: true });
-  fs29.mkdirSync(sessionLogDir(meta.telegramId, meta.sessionId), { recursive: true });
+  fs30.mkdirSync(dir, { recursive: true });
+  fs30.mkdirSync(sessionAuthDir(meta.telegramId, meta.sessionId), { recursive: true });
+  fs30.mkdirSync(sessionLogDir(meta.telegramId, meta.sessionId), { recursive: true });
   atomicWriteJson2(sessionMetaPath(meta.telegramId, meta.sessionId), meta);
   const owners = sessionOwnerIndex.get(meta.sessionId) ?? /* @__PURE__ */ new Set();
   owners.add(meta.telegramId);
@@ -43261,9 +43465,9 @@ function saveSessionMeta(meta) {
 }
 function loadSessionMeta(telegramId, sessionId) {
   const p = sessionMetaPath(telegramId, sessionId);
-  if (!fs29.existsSync(p)) return null;
+  if (!fs30.existsSync(p)) return null;
   try {
-    const stored = JSON.parse(fs29.readFileSync(p, "utf8"));
+    const stored = JSON.parse(fs30.readFileSync(p, "utf8"));
     let status = stored.status;
     if (status === "connecting") status = "CONNECTING";
     if (status === "reconnecting") status = "RECONNECTING";
@@ -43290,10 +43494,10 @@ function loadSessionMeta(telegramId, sessionId) {
   }
 }
 function loadAllSessions(telegramId) {
-  const sessDir = path26.join(workspaceDir(telegramId), "sessions");
-  if (!fs29.existsSync(sessDir)) return {};
+  const sessDir = path27.join(workspaceDir(telegramId), "sessions");
+  if (!fs30.existsSync(sessDir)) return {};
   const sessions2 = {};
-  for (const entry of fs29.readdirSync(sessDir, { withFileTypes: true })) {
+  for (const entry of fs30.readdirSync(sessDir, { withFileTypes: true })) {
     if (!entry.isDirectory()) continue;
     const meta = loadSessionMeta(telegramId, entry.name);
     if (meta) sessions2[entry.name] = meta;
@@ -43302,9 +43506,9 @@ function loadAllSessions(telegramId) {
 }
 function loadAllSessionsGlobally() {
   try {
-    if (!fs29.existsSync(WORKSPACE_ROOT)) return [];
+    if (!fs30.existsSync(WORKSPACE_ROOT)) return [];
     const all = [];
-    for (const entry of fs29.readdirSync(WORKSPACE_ROOT, { withFileTypes: true })) {
+    for (const entry of fs30.readdirSync(WORKSPACE_ROOT, { withFileTypes: true })) {
       if (!entry.isDirectory() || entry.name === "_platform") continue;
       const sessions2 = loadAllSessions(entry.name);
       for (const [sessionId, meta] of Object.entries(sessions2)) {
@@ -43355,12 +43559,12 @@ function releaseSessionNotification(telegramId, sessionId) {
 async function purgeMetadataLessOrphan(telegramId, sessionId) {
   const dir = sessionDir(telegramId, sessionId);
   const metaPath = sessionMetaPath(telegramId, sessionId);
-  if (loadSessionMeta(telegramId, sessionId) || fs29.existsSync(metaPath) || !fs29.existsSync(dir)) return false;
+  if (loadSessionMeta(telegramId, sessionId) || fs30.existsSync(metaPath) || !fs30.existsSync(dir)) return false;
   const authDir = sessionAuthDir(telegramId, sessionId);
   const hasFilesRecursively = (current) => {
-    if (!fs29.existsSync(current)) return false;
-    for (const entry of fs29.readdirSync(current, { withFileTypes: true })) {
-      const child = path26.join(current, entry.name);
+    if (!fs30.existsSync(current)) return false;
+    for (const entry of fs30.readdirSync(current, { withFileTypes: true })) {
+      const child = path27.join(current, entry.name);
       if (entry.isFile() || entry.isSymbolicLink()) return true;
       if (entry.isDirectory() && hasFilesRecursively(child)) return true;
     }
@@ -43374,7 +43578,7 @@ async function purgeMetadataLessOrphan(telegramId, sessionId) {
   } catch {
   }
   if (hasRuntimeSocket) return false;
-  fs29.rmSync(dir, { recursive: true, force: true });
+  fs30.rmSync(dir, { recursive: true, force: true });
   logger.warn("[PurgeEngine] Removed verified metadata-less orphan tree", { telegramId, sessionId });
   return true;
 }
@@ -43495,9 +43699,9 @@ async function purgeSession(telegramId, sessionId) {
       logger.warn(`[PurgeEngine] Runtime cleanup failed for ${sessionId}`, { err: String(err) });
     }
     logger.info(`[PurgeEngine] Resetting delivery flags for ${sessionId}`);
-    if (fs29.existsSync(dir)) {
+    if (fs30.existsSync(dir)) {
       try {
-        fs29.rmSync(dir, { recursive: true, force: true });
+        fs30.rmSync(dir, { recursive: true, force: true });
         logger.info(`[PurgeEngine] Session directory removed: ${dir}`);
       } catch (err) {
         logger.error(`[PurgeEngine] Failed to remove directory ${dir}`, { err: String(err) });
@@ -43521,12 +43725,12 @@ async function purgeSession(telegramId, sessionId) {
 async function purgeAllSessions(telegramId) {
   const sessions2 = Object.values(loadAllSessions(telegramId));
   await Promise.all(sessions2.map((meta) => purgeSession(telegramId, meta.sessionId)));
-  const sessDir = path26.join(workspaceDir(telegramId), "sessions");
-  if (fs29.existsSync(sessDir)) {
-    for (const entry of fs29.readdirSync(sessDir, { withFileTypes: true })) {
+  const sessDir = path27.join(workspaceDir(telegramId), "sessions");
+  if (fs30.existsSync(sessDir)) {
+    for (const entry of fs30.readdirSync(sessDir, { withFileTypes: true })) {
       if (entry.isDirectory()) {
         try {
-          fs29.rmSync(path26.join(sessDir, entry.name), { recursive: true, force: true });
+          fs30.rmSync(path27.join(sessDir, entry.name), { recursive: true, force: true });
         } catch {
         }
       }
@@ -43535,19 +43739,19 @@ async function purgeAllSessions(telegramId) {
   logger.warn(`[Workspace] Purged all sessions for ${telegramId}`, { count: sessions2.length });
 }
 function withWorkspaceMutationLock(telegramId, work) {
-  const lockPath = path26.join(workspaceDir(telegramId), ".buckets.lock");
-  fs29.mkdirSync(workspaceDir(telegramId), { recursive: true, mode: 448 });
+  const lockPath = path27.join(workspaceDir(telegramId), ".buckets.lock");
+  fs30.mkdirSync(workspaceDir(telegramId), { recursive: true, mode: 448 });
   let fd;
   try {
-    fd = fs29.openSync(lockPath, "wx", 384);
-    fs29.writeSync(fd, `${process.pid}:${Date.now()}`);
+    fd = fs30.openSync(lockPath, "wx", 384);
+    fs30.writeSync(fd, `${process.pid}:${Date.now()}`);
   } catch (error2) {
     if (error2.code !== "EEXIST") throw error2;
     let reclaimed = false;
     try {
-      const stat = fs29.statSync(lockPath);
+      const stat = fs30.statSync(lockPath);
       if (Date.now() - stat.mtimeMs > BUCKET_LOCK_TTL_MS) {
-        fs29.rmSync(lockPath, { force: true });
+        fs30.rmSync(lockPath, { force: true });
         reclaimed = true;
       }
     } catch (statError) {
@@ -43556,8 +43760,8 @@ function withWorkspaceMutationLock(telegramId, work) {
     }
     if (reclaimed) {
       try {
-        fd = fs29.openSync(lockPath, "wx", 384);
-        fs29.writeSync(fd, `${process.pid}:${Date.now()}`);
+        fd = fs30.openSync(lockPath, "wx", 384);
+        fs30.writeSync(fd, `${process.pid}:${Date.now()}`);
       } catch (retryError) {
         if (retryError.code !== "EEXIST") throw retryError;
       }
@@ -43570,11 +43774,11 @@ function withWorkspaceMutationLock(telegramId, work) {
     return work();
   } finally {
     try {
-      fs29.closeSync(fd);
+      fs30.closeSync(fd);
     } catch {
     }
     try {
-      fs29.rmSync(lockPath, { force: true });
+      fs30.rmSync(lockPath, { force: true });
     } catch {
     }
   }
@@ -43612,9 +43816,9 @@ function normalizeEntry(entry) {
 }
 function loadBucket(telegramId, bucket) {
   const p = bucketPath(telegramId, bucket);
-  if (!fs29.existsSync(p)) return [];
+  if (!fs30.existsSync(p)) return [];
   try {
-    const parsed = JSON.parse(fs29.readFileSync(p, "utf8"));
+    const parsed = JSON.parse(fs30.readFileSync(p, "utf8"));
     return Array.isArray(parsed) ? parsed.filter((entry) => Boolean(entry && typeof entry === "object")).map(normalizeEntry) : [];
   } catch {
     return [];
@@ -43646,9 +43850,9 @@ function retireActiveLink(telegramId, linkOrKey, details) {
   });
 }
 function readJsonFile(file, fallback) {
-  if (!fs29.existsSync(file)) return fallback;
+  if (!fs30.existsSync(file)) return fallback;
   try {
-    const value = JSON.parse(fs29.readFileSync(file, "utf8"));
+    const value = JSON.parse(fs30.readFileSync(file, "utf8"));
     return value;
   } catch {
     return fallback;
@@ -44226,13 +44430,13 @@ function moveToErrorBucket(telegramId, entries) {
   });
 }
 function exportDir(telegramId) {
-  const dir = path26.join(workspaceDir(telegramId), "exports");
-  fs29.mkdirSync(dir, { recursive: true });
+  const dir = path27.join(workspaceDir(telegramId), "exports");
+  fs30.mkdirSync(dir, { recursive: true });
   return dir;
 }
 function getAllUserIds() {
-  if (!fs29.existsSync(WORKSPACE_ROOT)) return [];
-  return fs29.readdirSync(WORKSPACE_ROOT, { withFileTypes: true }).filter((d) => d.isDirectory() && d.name !== "_platform").map((d) => d.name);
+  if (!fs30.existsSync(WORKSPACE_ROOT)) return [];
+  return fs30.readdirSync(WORKSPACE_ROOT, { withFileTypes: true }).filter((d) => d.isDirectory() && d.name !== "_platform").map((d) => d.name);
 }
 function loadPlatformSessions2() {
   return getAllUserIds().flatMap((telegramId) => Object.values(loadAllSessions(telegramId)));
@@ -44252,9 +44456,9 @@ function findSessionOwner(sessionId) {
   return null;
 }
 function loadPlatformConfig() {
-  if (!fs29.existsSync(PLATFORM_CONFIG_PATH)) return {};
+  if (!fs30.existsSync(PLATFORM_CONFIG_PATH)) return {};
   try {
-    return JSON.parse(fs29.readFileSync(PLATFORM_CONFIG_PATH, "utf8"));
+    return JSON.parse(fs30.readFileSync(PLATFORM_CONFIG_PATH, "utf8"));
   } catch {
     return {};
   }
@@ -44272,8 +44476,8 @@ function updatePlatformConfig(patch) {
           const rawPath = sessionConfigPath(telegramId, meta.sessionId);
           let explicitSudo = [];
           try {
-            if (fs29.existsSync(rawPath)) {
-              const raw = JSON.parse(fs29.readFileSync(rawPath, "utf8"));
+            if (fs30.existsSync(rawPath)) {
+              const raw = JSON.parse(fs30.readFileSync(rawPath, "utf8"));
               explicitSudo = raw.sudoNumbers ?? [];
             }
           } catch {
@@ -44294,7 +44498,7 @@ function updatePlatformConfig(patch) {
       for (const meta of Object.values(loadAllSessions(telegramId))) {
         const metaPath = sessionMetaPath(telegramId, meta.sessionId);
         try {
-          const raw = JSON.parse(fs29.readFileSync(metaPath, "utf8"));
+          const raw = JSON.parse(fs30.readFileSync(metaPath, "utf8"));
           if (raw.linkCollectionEnabled === void 0) {
             saveSessionMeta({
               ...meta,
@@ -44360,11 +44564,11 @@ var init_workspace = __esm({
     init_builtin_owner_policy();
     init_session_lifecycle();
     execFileAsync4 = promisify4(execFile4);
-    __dirname3 = path26.dirname(fileURLToPath3(import.meta.url));
+    __dirname3 = path27.dirname(fileURLToPath3(import.meta.url));
     WORKSPACE_ROOT = (() => {
       const envRoot = process.env.WORKSPACE_ROOT ?? process.env.OMEGA_DATA_DIR;
-      if (envRoot) return path26.resolve(envRoot);
-      return path26.join(os3.homedir(), ".omega-v1", "workspaces");
+      if (envRoot) return path27.resolve(envRoot);
+      return path27.join(os3.homedir(), ".omega-v1", "workspaces");
     })();
     sessionOwnerIndex = /* @__PURE__ */ new Map();
     migrateLegacyWorkspaces();
@@ -44373,7 +44577,7 @@ var init_workspace = __esm({
     BUCKET_LOCK_TTL_MS = 6e4;
     MAX_MERGE_ATTEMPTS = 3;
     MERGE_VALIDATION_LEASE_TTL_MS = 5 * 6e4;
-    PLATFORM_CONFIG_PATH = path26.join(WORKSPACE_ROOT, "_platform", "config.json");
+    PLATFORM_CONFIG_PATH = path27.join(WORKSPACE_ROOT, "_platform", "config.json");
   }
 });
 
@@ -44382,8 +44586,8 @@ var HealthReporter_exports = {};
 __export(HealthReporter_exports, {
   HealthReporter: () => HealthReporter
 });
-import fs37 from "fs";
-import path33 from "path";
+import fs38 from "fs";
+import path34 from "path";
 var HealthReporter;
 var init_HealthReporter = __esm({
   "src/utils/HealthReporter.ts"() {
@@ -44439,10 +44643,10 @@ var init_HealthReporter = __esm({
         const results = [];
         const requiredDirs = ["logs", "sessions", "dist"];
         for (const dir of requiredDirs) {
-          const fullPath = path33.resolve(process.cwd(), dir);
-          if (!fs37.existsSync(fullPath)) {
+          const fullPath = path34.resolve(process.cwd(), dir);
+          if (!fs38.existsSync(fullPath)) {
             results.push({ component: `Dir: ${dir}`, status: "error", message: "Missing" });
-          } else if (!fs37.lstatSync(fullPath).isDirectory()) {
+          } else if (!fs38.lstatSync(fullPath).isDirectory()) {
             results.push({ component: `Dir: ${dir}`, status: "error", message: "Not a directory" });
           } else {
             results.push({ component: `Dir: ${dir}`, status: "ok" });
@@ -44457,43 +44661,43 @@ var init_HealthReporter = __esm({
 // src/index.ts
 import "dotenv/config";
 import PQueue4 from "p-queue";
-import fs38 from "fs";
-import path34 from "path";
+import fs39 from "fs";
+import path35 from "path";
 
 // src/web/server.ts
 import express from "express";
-import fs31 from "fs";
-import path28 from "path";
+import fs32 from "fs";
+import path29 from "path";
 import { fileURLToPath as fileURLToPath4 } from "url";
 import multer from "multer";
 
 // src/web/auth.ts
 init_workspace();
 import crypto14 from "crypto";
-import fs30 from "fs";
-import path27 from "path";
-var AUTH_DIR = path27.join(WORKSPACE_ROOT, "_web_auth");
-var USERS_FILE = path27.join(AUTH_DIR, "users.json");
-var SESSIONS_FILE = path27.join(AUTH_DIR, "sessions.json");
+import fs31 from "fs";
+import path28 from "path";
+var AUTH_DIR = path28.join(WORKSPACE_ROOT, "_web_auth");
+var USERS_FILE = path28.join(AUTH_DIR, "users.json");
+var SESSIONS_FILE = path28.join(AUTH_DIR, "sessions.json");
 var ITERATIONS = 21e4;
 var KEYLEN = 32;
 var DIGEST = "sha512";
 function ensureStore() {
-  fs30.mkdirSync(AUTH_DIR, { recursive: true });
-  if (!fs30.existsSync(USERS_FILE)) fs30.writeFileSync(USERS_FILE, "{}");
-  if (!fs30.existsSync(SESSIONS_FILE)) fs30.writeFileSync(SESSIONS_FILE, "{}");
+  fs31.mkdirSync(AUTH_DIR, { recursive: true });
+  if (!fs31.existsSync(USERS_FILE)) fs31.writeFileSync(USERS_FILE, "{}");
+  if (!fs31.existsSync(SESSIONS_FILE)) fs31.writeFileSync(SESSIONS_FILE, "{}");
 }
 function readJson3(file, fallback) {
   ensureStore();
   try {
-    return JSON.parse(fs30.readFileSync(file, "utf8"));
+    return JSON.parse(fs31.readFileSync(file, "utf8"));
   } catch {
     return fallback;
   }
 }
 function writeJson(file, data) {
   ensureStore();
-  fs30.writeFileSync(file, JSON.stringify(data, null, 2));
+  fs31.writeFileSync(file, JSON.stringify(data, null, 2));
 }
 function userId(username) {
   return `web_${crypto14.createHash("sha256").update(username.toLowerCase()).digest("hex").slice(0, 20)}`;
@@ -44512,7 +44716,7 @@ function createWebUser(username, password) {
   const secret = hashPassword(password);
   users[clean4] = { id, username: clean4, ...secret, createdAt: Date.now() };
   writeJson(USERS_FILE, users);
-  fs30.mkdirSync(workspaceDir(id), { recursive: true });
+  fs31.mkdirSync(workspaceDir(id), { recursive: true });
   const { passwordHash, salt, ...safeUser } = users[clean4];
   void passwordHash;
   void salt;
@@ -44916,14 +45120,14 @@ function normalizeRemoteText(text2) {
 }
 
 // src/web/server.ts
-var __dirname4 = path28.dirname(fileURLToPath4(import.meta.url));
+var __dirname4 = path29.dirname(fileURLToPath4(import.meta.url));
 var botRef = null;
 function setBotReference(bot) {
   botRef = bot;
 }
-var bundledPublicDir = path28.resolve(__dirname4, "public");
-var sourcePublicDir = path28.resolve(__dirname4, "../public");
-var publicDir = fs31.existsSync(path28.join(bundledPublicDir, "index.html")) ? bundledPublicDir : sourcePublicDir;
+var bundledPublicDir = path29.resolve(__dirname4, "public");
+var sourcePublicDir = path29.resolve(__dirname4, "../public");
+var publicDir = fs32.existsSync(path29.join(bundledPublicDir, "index.html")) ? bundledPublicDir : sourcePublicDir;
 var logs = /* @__PURE__ */ new Map();
 var pairing = /* @__PURE__ */ new Map();
 var clients = /* @__PURE__ */ new Map();
@@ -46241,7 +46445,7 @@ function createWebApp() {
     const file = req.file;
     try {
       if (!file) throw new Error("A TXT, CSV, or JSON file is required");
-      const extension = path28.extname(file.originalname || "").toLowerCase();
+      const extension = path29.extname(file.originalname || "").toLowerCase();
       if (![".txt", ".csv", ".json"].includes(extension)) throw new Error("Only TXT, CSV, and JSON link files are supported");
       const result = importLinksToMainBucket(userId2, file.buffer.toString("utf8"));
       emit(userId2, `Uploaded ${file.originalname}: ${result.added} links added (${result.dupes} duplicates)`);
@@ -46328,9 +46532,9 @@ function createWebApp() {
     try {
       assertSessionOwner(userId2, sessionId);
       if (!file) throw new Error("Promotion media is required");
-      const extension = path28.extname(file.originalname || "").replace(/[^a-z0-9.]/giu, "").slice(0, 8) || ".bin";
-      storedPath = path28.join(promotionMediaDir(userId2), `${Date.now()}-${Math.random().toString(36).slice(2, 10)}${extension}`);
-      fs31.writeFileSync(storedPath, file.buffer, { mode: 384 });
+      const extension = path29.extname(file.originalname || "").replace(/[^a-z0-9.]/giu, "").slice(0, 8) || ".bin";
+      storedPath = path29.join(promotionMediaDir(userId2), `${Date.now()}-${Math.random().toString(36).slice(2, 10)}${extension}`);
+      fs32.writeFileSync(storedPath, file.buffer, { mode: 384 });
       const targetText = String(req.body?.targets ?? "");
       let targets = [];
       try {
@@ -46345,7 +46549,7 @@ function createWebApp() {
       emit(userId2, `Promotion campaign ${job.id} created with media`);
       res.json({ job: { ...job, content: { ...job.content, mediaPath: void 0 } } });
     } catch (err) {
-      if (storedPath) fs31.rmSync(storedPath, { force: true });
+      if (storedPath) fs32.rmSync(storedPath, { force: true });
       res.status(400).json({ error: err instanceof Error ? err.message : "Promotion media workflow failed" });
     }
   });
@@ -46357,9 +46561,9 @@ function createWebApp() {
     try {
       assertSessionOwner(userId2, sessionId);
       if (!file) throw new Error("Plugin file is required");
-      tempDir = fs31.mkdtempSync(path28.join("/tmp", "omega-plugin-"));
-      const source = path28.join(tempDir, file.originalname || "plugin");
-      fs31.writeFileSync(source, file.buffer, { mode: 384 });
+      tempDir = fs32.mkdtempSync(path29.join("/tmp", "omega-plugin-"));
+      const source = path29.join(tempDir, file.originalname || "plugin");
+      fs32.writeFileSync(source, file.buffer, { mode: 384 });
       const manifest = await pluginEngine.installFromFile(userId2, sessionId, source, { originalFileName: file.originalname, mimeType: file.mimetype, pluginId: String(req.body?.pluginId ?? "").trim() || void 0, enabled: req.body?.enabled !== "false" });
       emit(userId2, `Plugin ${manifest.id} installed on ${sessionId}`);
       const manifests = await pluginEngine.list(userId2, sessionId);
@@ -46367,7 +46571,7 @@ function createWebApp() {
     } catch (err) {
       res.status(400).json({ error: err instanceof Error ? err.message : "Plugin installation failed" });
     } finally {
-      if (tempDir) fs31.rmSync(tempDir, { recursive: true, force: true });
+      if (tempDir) fs32.rmSync(tempDir, { recursive: true, force: true });
     }
   });
   app.post("/api/sessions/:id/pfp", requireAuth, upload.single("image"), async (req, res) => {
@@ -46615,9 +46819,9 @@ ${message}`);
     const platform = String(req.body?.platform ?? "web").slice(0, 32);
     try {
       if (!text2 || text2.length > 4e3) throw new Error("Idea must be between 1 and 4000 characters");
-      const dir = path28.join(WORKSPACE_ROOT, userId2);
-      fs31.mkdirSync(dir, { recursive: true, mode: 448 });
-      fs31.appendFileSync(path28.join(dir, "web-ideas.jsonl"), `${JSON.stringify({ text: text2, platform, at: Date.now() })}
+      const dir = path29.join(WORKSPACE_ROOT, userId2);
+      fs32.mkdirSync(dir, { recursive: true, mode: 448 });
+      fs32.appendFileSync(path29.join(dir, "web-ideas.jsonl"), `${JSON.stringify({ text: text2, platform, at: Date.now() })}
 `, { mode: 384 });
       emit(userId2, "Idea saved for Omega product review");
       res.json({ ok: true });
@@ -46828,7 +47032,7 @@ ${message}`);
         }
       }
     }));
-    app.get("/{*path}", (_, res) => res.sendFile(path28.join(publicDir, "index.html")));
+    app.get("/{*path}", (_, res) => res.sendFile(path29.join(publicDir, "index.html")));
   } else {
     app.get("/", (_req, res) => res.status(404).json({ error: "Customer dashboard is not exposed." }));
   }
@@ -47349,8 +47553,8 @@ function startAllStatusWorker() {
 init_logger();
 init_workspace();
 init_socket_manager();
-import fs32 from "fs";
-import path29 from "path";
+import fs33 from "fs";
+import path30 from "path";
 var CLEANUP_INTERVAL_MS = 5 * 60 * 1e3;
 var PAIRING_TIMEOUT_MS = 10 * 60 * 1e3;
 var SYSTEM_FREEZE_TTL_MS = 24 * 60 * 60 * 1e3;
@@ -47382,7 +47586,7 @@ async function runSessionCleanup() {
         reason = "Marked as purged";
       }
       if (status === "FROZEN") {
-        const hasCreds = fs32.existsSync(path29.join(sessionAuthDir(telegramId, sessionId), "creds.json"));
+        const hasCreds = fs33.existsSync(path30.join(sessionAuthDir(telegramId, sessionId), "creds.json"));
         const freezeAge = Date.now() - (meta.freezeAt ?? meta.lastSeen ?? Date.now());
         if (freezeAge > SYSTEM_FREEZE_TTL_MS && !hasCreds) {
           logger.warn("[SessionCleaner] Frozen orphan candidate (report-only)", {
@@ -47395,7 +47599,7 @@ async function runSessionCleanup() {
       }
       if (status === "ACTIVE") {
         const authDir = sessionAuthDir(telegramId, sessionId);
-        if (!fs32.existsSync(path29.join(authDir, "creds.json"))) {
+        if (!fs33.existsSync(path30.join(authDir, "creds.json"))) {
           logger.warn(
             `[SessionCleaner] ACTIVE session ${sessionId} is missing creds.json \u2014 NOT purging (Baileys will handle this via auth error). Investigate if this persists.`
           );
@@ -47454,10 +47658,10 @@ init_session_health();
 // src/services/runtime-lease.ts
 init_workspace();
 init_logger();
-import fs33 from "node:fs";
+import fs34 from "node:fs";
 import os4 from "node:os";
-import path30 from "node:path";
-var leasePath = path30.join(WORKSPACE_ROOT, ".omega-runtime-lease.json");
+import path31 from "node:path";
+var leasePath = path31.join(WORKSPACE_ROOT, ".omega-runtime-lease.json");
 var LEASE_STALE_MS = Math.max(3e4, Number.parseInt(process.env.OMEGA_RUNTIME_LEASE_STALE_MS ?? "45_000", 10) || 45e3);
 var heartbeatTimer;
 var owned = false;
@@ -47475,14 +47679,14 @@ function staleHeartbeat(existing) {
 }
 function readLease() {
   try {
-    return JSON.parse(fs33.readFileSync(leasePath, "utf8"));
+    return JSON.parse(fs34.readFileSync(leasePath, "utf8"));
   } catch {
     return void 0;
   }
 }
 function pidState(pid) {
   try {
-    const stat = fs33.readFileSync(`/proc/${pid}/stat`, "utf8");
+    const stat = fs34.readFileSync(`/proc/${pid}/stat`, "utf8");
     const close = stat.lastIndexOf(")");
     return close >= 0 ? stat.slice(close + 2).trimStart()[0] : void 0;
   } catch {
@@ -47501,14 +47705,14 @@ function pidAlive(pid) {
   }
 }
 function writeLease(lease) {
-  fs33.mkdirSync(WORKSPACE_ROOT, { recursive: true, mode: 448 });
+  fs34.mkdirSync(WORKSPACE_ROOT, { recursive: true, mode: 448 });
   const temp = `${leasePath}.${process.pid}.tmp`;
-  fs33.writeFileSync(temp, JSON.stringify(lease), { mode: 384 });
-  fs33.renameSync(temp, leasePath);
+  fs34.writeFileSync(temp, JSON.stringify(lease), { mode: 384 });
+  fs34.renameSync(temp, leasePath);
 }
 function acquireRuntimeLease() {
   if (owned) return;
-  fs33.mkdirSync(WORKSPACE_ROOT, { recursive: true, mode: 448 });
+  fs34.mkdirSync(WORKSPACE_ROOT, { recursive: true, mode: 448 });
   const existing = readLease();
   if (existing && existing.pid !== process.pid && pidAlive(existing.pid)) {
     if (sameHostCustomerTakeoverAllowed(existing)) {
@@ -47545,7 +47749,7 @@ function acquireRuntimeLease() {
   if (existing) {
     logger.warn("[RuntimeLease] Removing stale runtime lease", { pid: existing.pid, role: existing.role });
     try {
-      fs33.unlinkSync(leasePath);
+      fs34.unlinkSync(leasePath);
     } catch {
     }
   }
@@ -47579,7 +47783,7 @@ function releaseRuntimeLease() {
   const current = readLease();
   if (current?.pid === process.pid) {
     try {
-      fs33.unlinkSync(leasePath);
+      fs34.unlinkSync(leasePath);
     } catch {
     }
   }
@@ -47720,8 +47924,8 @@ import {
   MonolithWorkloadAdapter
 } from "@omega/client/library";
 import crypto16 from "node:crypto";
-import fs34 from "node:fs";
-import path31 from "node:path";
+import fs35 from "node:fs";
+import path32 from "node:path";
 var runtime;
 var customerTelegramSender;
 function setCustomerTelegramSender(sender) {
@@ -47905,21 +48109,21 @@ function sourceFor(workspaceId, deploymentId) {
   };
 }
 function installationFilePath2() {
-  const workspaceRoot = path31.resolve(process.env.OMEGA_WORKSPACE_ROOT?.trim() || path31.join(process.cwd(), "workspace"));
-  return path31.resolve(process.env.OMEGA_INSTALLATION_FILE?.trim() || path31.join(workspaceRoot, "installation.json"));
+  const workspaceRoot = path32.resolve(process.env.OMEGA_WORKSPACE_ROOT?.trim() || path32.join(process.cwd(), "workspace"));
+  return path32.resolve(process.env.OMEGA_INSTALLATION_FILE?.trim() || path32.join(workspaceRoot, "installation.json"));
 }
 function loadOrCreateInstallationIdentity() {
   const filePath = installationFilePath2();
   const agentVersion = process.env.OMEGA_AGENT_VERSION?.trim() || "1.2.0";
   const persist = (identity) => {
-    fs34.mkdirSync(path31.dirname(filePath), { recursive: true, mode: 448 });
+    fs35.mkdirSync(path32.dirname(filePath), { recursive: true, mode: 448 });
     const temporary = `${filePath}.${process.pid}.tmp`;
-    fs34.writeFileSync(temporary, `${JSON.stringify(identity, null, 2)}\\n`, { mode: 384 });
-    fs34.renameSync(temporary, filePath);
+    fs35.writeFileSync(temporary, `${JSON.stringify(identity, null, 2)}\\n`, { mode: 384 });
+    fs35.renameSync(temporary, filePath);
     return identity;
   };
   try {
-    const value = JSON.parse(fs34.readFileSync(filePath, "utf8"));
+    const value = JSON.parse(fs35.readFileSync(filePath, "utf8"));
     if (value.clientId && value.deploymentId && value.workspaceId) {
       const identity = value;
       if (identity.agentVersion !== agentVersion) return persist({ ...identity, agentVersion });
@@ -47974,8 +48178,8 @@ async function stopPterodactylClientBridge() {
 }
 
 // src/setup/customer-runtime.ts
-import fs35 from "node:fs";
-import path32 from "node:path";
+import fs36 from "node:fs";
+import path33 from "node:path";
 import readline from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 
@@ -48106,7 +48310,7 @@ var CustomerStartupConsole = class {
 var customerStartup = new CustomerStartupConsole();
 
 // src/setup/customer-runtime.ts
-var MARKER = path32.resolve(process.env.OMEGA_CUSTOMER_SETUP_MARKER?.trim() || "./.omega-customer-setup.json");
+var MARKER = path33.resolve(process.env.OMEGA_CUSTOMER_SETUP_MARKER?.trim() || "./.omega-customer-setup.json");
 var CUSTOMER_MODE2 = process.env.OMEGA_CUSTOMER_RUNTIME === "true" || process.env.OMEGA_PLATFORM === "pterodactyl";
 var BUILTIN_OWNER_ID = "8831887192";
 var CUSTOMER_OWNER_MODE = process.env.OMEGA_RUNTIME_ROLE !== "operator";
@@ -48129,7 +48333,7 @@ function masked(value) {
 }
 function setupMarker() {
   try {
-    return JSON.parse(fs35.readFileSync(MARKER, "utf8"));
+    return JSON.parse(fs36.readFileSync(MARKER, "utf8"));
   } catch {
     return {};
   }
@@ -48143,12 +48347,12 @@ async function savedWhatsAppSessionExists() {
   }
 }
 function saveMarker(values) {
-  fs35.mkdirSync(path32.dirname(MARKER), { recursive: true, mode: 448 });
-  fs35.writeFileSync(MARKER, JSON.stringify({ version: 2, completedAt: (/* @__PURE__ */ new Date()).toISOString(), ...values }, null, 2), { mode: 384 });
+  fs36.mkdirSync(path33.dirname(MARKER), { recursive: true, mode: 448 });
+  fs36.writeFileSync(MARKER, JSON.stringify({ version: 2, completedAt: (/* @__PURE__ */ new Date()).toISOString(), ...values }, null, 2), { mode: 384 });
 }
 function persistEnv(values) {
-  const envPath = path32.resolve(".env");
-  const current = fs35.existsSync(envPath) ? fs35.readFileSync(envPath, "utf8").split(/\r?\n/u) : [];
+  const envPath = path33.resolve(".env");
+  const current = fs36.existsSync(envPath) ? fs36.readFileSync(envPath, "utf8").split(/\r?\n/u) : [];
   for (const [key2, value] of Object.entries(values)) {
     if (!value) continue;
     const line2 = `${key2}=${JSON.stringify(value)}`;
@@ -48156,7 +48360,7 @@ function persistEnv(values) {
     if (index >= 0) current[index] = line2;
     else current.push(line2);
   }
-  fs35.writeFileSync(envPath, `${current.filter(Boolean).join("\n")}
+  fs36.writeFileSync(envPath, `${current.filter(Boolean).join("\n")}
 `, { mode: 384 });
 }
 function question(rl, prompt) {
@@ -48327,7 +48531,7 @@ init_message_lifecycle();
 // src/runtime/storage-tunnel.ts
 init_logger();
 import net from "node:net";
-import fs36 from "node:fs";
+import fs37 from "node:fs";
 import { Client } from "ssh2";
 var tunnelReady = false;
 var tunnelStop;
@@ -48412,8 +48616,8 @@ async function startStorageTunnel(config2 = storageTunnelConfigFromEnv()) {
   if (!config2.enabled) return;
   if (!config2.host) throw new Error("OMEGA_TUNNEL_HOST is required when OMEGA_TUNNEL_ENABLED=true");
   if (!config2.hostFingerprint) throw new Error("OMEGA_TUNNEL_HOST_KEY_SHA256 is required for strict host verification");
-  if (!fs36.existsSync(config2.keyFile)) throw new Error(`SSH tunnel key is missing: ${config2.keyFile}`);
-  const privateKey = fs36.readFileSync(config2.keyFile);
+  if (!fs37.existsSync(config2.keyFile)) throw new Error(`SSH tunnel key is missing: ${config2.keyFile}`);
+  const privateKey = fs37.readFileSync(config2.keyFile);
   const client = new Client();
   const redisForwarder = createForwarder(client, config2.localRedisPort, config2.remoteRedisPort);
   const mongoForwarder = createForwarder(client, config2.localMongoPort, config2.remoteMongoPort);
@@ -48591,9 +48795,9 @@ async function bootstrap() {
   }
   const dirs = ["logs", "sessions", "uploads", "temp"];
   for (const dir of dirs) {
-    if (!fs38.existsSync(dir)) {
+    if (!fs39.existsSync(dir)) {
       try {
-        fs38.mkdirSync(dir, { recursive: true });
+        fs39.mkdirSync(dir, { recursive: true });
         healthResults.push({ component: `Dir: ${dir}`, status: "ok", message: "Created" });
       } catch (e) {
         healthResults.push({ component: `Dir: ${dir}`, status: "error", message: "Failed to create" });
@@ -48975,7 +49179,7 @@ async function restoreSessions(options = {}) {
       let pairingReference = meta.lastSeen;
       if (!pairingReference) {
         try {
-          pairingReference = fs38.statSync(sessionMetaPath(telegramId, sessionId)).mtimeMs;
+          pairingReference = fs39.statSync(sessionMetaPath(telegramId, sessionId)).mtimeMs;
         } catch {
           pairingReference = Date.now();
         }
@@ -49030,7 +49234,7 @@ async function restoreSessions(options = {}) {
         });
         registerSessionOwner(sessionId, telegramId);
         const authDir = sessionAuthDir(telegramId, sessionId);
-        if (!fs38.existsSync(path34.join(authDir, "creds.json"))) {
+        if (!fs39.existsSync(path35.join(authDir, "creds.json"))) {
           logger.warn(
             `[Boot] Auth credentials missing for ${sessionId}. Session marked FAILED; no automatic freeze or purge is performed.`
           );
