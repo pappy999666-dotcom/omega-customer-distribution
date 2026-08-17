@@ -3114,12 +3114,12 @@ async function resolveMention(socket, src) {
 }
 async function sanitizeMentionJids(socket, jids, participants) {
   const out = [];
-  const seen2 = /* @__PURE__ */ new Set();
+  const seen3 = /* @__PURE__ */ new Set();
   for (const raw of jids ?? []) {
     if (!raw) continue;
     const r = await resolveMention(socket, { jid: raw, participants }).catch(() => null);
-    if (r?.jid && !seen2.has(r.jid)) {
-      seen2.add(r.jid);
+    if (r?.jid && !seen3.has(r.jid)) {
+      seen3.add(r.jid);
       out.push(r.jid);
     }
   }
@@ -3129,15 +3129,15 @@ async function syncMentionTokens(socket, text2, mentions, participants) {
   const result = text2 ?? "";
   if (!MENTION_TOKEN_RE.test(result)) return { text: result, mentions: [...mentions] };
   const out = [...mentions];
-  const seen2 = new Set(out);
+  const seen3 = new Set(out);
   for (const match of result.matchAll(MENTION_TOKEN_RE)) {
     const digits = match[1];
     if (!digits) continue;
     const phoneJid = `${digits}@s.whatsapp.net`;
-    if (seen2.has(phoneJid)) continue;
+    if (seen3.has(phoneJid)) continue;
     const r = await resolveMention(socket, { jid: phoneJid, participants }).catch(() => null);
-    if (r?.jid && !seen2.has(r.jid)) {
-      seen2.add(r.jid);
+    if (r?.jid && !seen3.has(r.jid)) {
+      seen3.add(r.jid);
       out.push(r.jid);
     }
   }
@@ -4247,12 +4247,12 @@ function unwrapMessage(raw) {
   let ephemeral = false;
   let forwarded = false;
   const path34 = [];
-  const seen2 = /* @__PURE__ */ new Set();
+  const seen3 = /* @__PURE__ */ new Set();
   const MAX_DEPTH = 16;
   for (let i = 0; i < MAX_DEPTH; i++) {
     if (!current || typeof current !== "object") break;
-    if (seen2.has(current)) break;
-    seen2.add(current);
+    if (seen3.has(current)) break;
+    seen3.add(current);
     const key2 = WRAPPER_KEYS.find((k) => current[k] && typeof current[k] === "object");
     if (!key2) break;
     if (VIEW_ONCE_KEYS.includes(key2)) viewOnce = true;
@@ -4570,6 +4570,7 @@ var init_command_parser = __esm({
       "left",
       "leave",
       "leaveall",
+      "autojoin",
       // Tagging
       "tag",
       "mtag",
@@ -5936,12 +5937,12 @@ function extractAllInviteLinks(text2) {
   const tertiary = text2.matchAll(
     /chat\.whatsapp\.com\/([A-Za-z0-9_-]{10,})/gu
   );
-  const seen2 = /* @__PURE__ */ new Set();
+  const seen3 = /* @__PURE__ */ new Set();
   const links = [];
   for (const match of [...primary, ...secondary, ...tertiary]) {
     const normalized = `https://chat.whatsapp.com/${match[1]}`;
-    if (!seen2.has(normalized)) {
-      seen2.add(normalized);
+    if (!seen3.has(normalized)) {
+      seen3.add(normalized);
       links.push(normalized);
     }
   }
@@ -6108,14 +6109,14 @@ function exportBucket(telegramId, bucket, format) {
 }
 function getMasterActiveBucket(userIds) {
   const all = [];
-  const seen2 = /* @__PURE__ */ new Set();
+  const seen3 = /* @__PURE__ */ new Set();
   for (const uid of userIds) {
     const active = loadBucket(uid, "active");
     for (const e of active) {
       const key2 = e.jid ?? e.link;
-      if (!seen2.has(key2)) {
+      if (!seen3.has(key2)) {
         all.push(e);
-        seen2.add(key2);
+        seen3.add(key2);
       }
     }
   }
@@ -6733,6 +6734,7 @@ __export(join_manager_exports, {
   persistLegacyJoinState: () => persistLegacyJoinState,
   recoverJoinJobsForAllUsers: () => recoverJoinJobsForAllUsers,
   recoverJoinJobsForSession: () => recoverJoinJobsForSession,
+  resetRetryableJoinFailuresForStart: () => resetRetryableJoinFailuresForStart,
   runExplicitJoinJob: () => runExplicitJoinJob,
   sessionJoinBecameUnavailable: () => sessionJoinBecameUnavailable,
   startJoinJob: () => startJoinJob,
@@ -6956,6 +6958,9 @@ function hasReadyJoinWork(telegramId, sessionId, maxRetries) {
 }
 function getSessionJoinableLinkCount(telegramId, sessionId, maxRetries = DEFAULT_MAX_RETRIES) {
   return joinWorkEntries(telegramId, sessionId, maxRetries).length;
+}
+function resetRetryableJoinFailuresForStart(telegramId) {
+  return resetRetryableJoinFailures(telegramId);
 }
 function classifyFailure2(error2, result) {
   if (result?.alreadyMember || /already\s+(?:a\s+)?member|already in group|participant.*exists/i.test(error2)) return "ALREADY_MEMBER";
@@ -11971,6 +11976,107 @@ var init_lifecycle = __esm({
   }
 });
 
+// src/services/auto-join.ts
+function queueKey(telegramId, sessionId) {
+  return `${telegramId}:${sessionId}`;
+}
+function pruneSeen() {
+  const cutoff = Date.now() - SEEN_TTL_MS;
+  for (const [key2, stamp] of seen2) if (stamp < cutoff) seen2.delete(key2);
+  while (seen2.size > MAX_SEEN) {
+    const oldest = seen2.keys().next().value;
+    if (!oldest) break;
+    seen2.delete(oldest);
+  }
+}
+function sleep4(ms) {
+  return new Promise((resolve) => {
+    const timer = setTimeout(resolve, ms);
+    timer.unref?.();
+  });
+}
+function autoJoinEnabled(telegramId, sessionId) {
+  return loadSessionMeta(telegramId, sessionId)?.autoJoin?.enabled === true;
+}
+function setAutoJoinEnabled(telegramId, sessionId, enabled) {
+  const current = loadSessionMeta(telegramId, sessionId);
+  if (!current) return false;
+  updateSessionMeta(telegramId, sessionId, {
+    autoJoin: {
+      ...current.autoJoin ?? {},
+      enabled
+    }
+  });
+  return true;
+}
+async function runAutoJoin(telegramId, sessionId, socket, link) {
+  if (!autoJoinEnabled(telegramId, sessionId)) return;
+  await sleep4(AUTOJOIN_DELAY_MS);
+  if (!autoJoinEnabled(telegramId, sessionId)) return;
+  const key2 = canonicalLinkKey(link);
+  const current = loadSessionMeta(telegramId, sessionId);
+  updateSessionMeta(telegramId, sessionId, {
+    autoJoin: {
+      ...current?.autoJoin ?? { enabled: true },
+      lastLink: link,
+      lastAttemptAt: Date.now()
+    }
+  });
+  const result = await executeSingleJoin(socket, sessionId, telegramId, link);
+  const latest = loadSessionMeta(telegramId, sessionId);
+  updateSessionMeta(telegramId, sessionId, {
+    autoJoin: {
+      ...latest?.autoJoin ?? { enabled: true },
+      lastLink: link,
+      lastAttemptAt: Date.now(),
+      lastResult: result.success ? "JOINED" : result.alreadyMember ? "ALREADY_MEMBER" : "FAILED",
+      lastError: result.success || result.alreadyMember ? void 0 : result.error
+    }
+  });
+  logger.info("[AutoJoin] invite processed", {
+    telegramId,
+    sessionId,
+    linkKey: key2,
+    result: result.success ? "JOINED" : result.alreadyMember ? "ALREADY_MEMBER" : "FAILED"
+  });
+}
+function observeAutoJoinLinks(telegramId, sessionId, socket, text2) {
+  if (!text2 || !autoJoinEnabled(telegramId, sessionId)) return;
+  const links = extractAllInviteLinks(text2);
+  if (links.length === 0) return;
+  pruneSeen();
+  const key2 = queueKey(telegramId, sessionId);
+  let queue = queues2.get(key2) ?? Promise.resolve();
+  for (const link of links) {
+    const linkKey = `${key2}:${canonicalLinkKey(link)}`;
+    if (seen2.has(linkKey)) continue;
+    seen2.set(linkKey, Date.now());
+    queue = queue.then(() => runAutoJoin(telegramId, sessionId, socket, link)).catch((error2) => {
+      logger.warn("[AutoJoin] background join failed", { telegramId, sessionId, error: String(error2) });
+    });
+  }
+  let chained;
+  chained = queue.finally(() => {
+    if (queues2.get(key2) === chained) queues2.delete(key2);
+  });
+  queues2.set(key2, chained);
+}
+var AUTOJOIN_DELAY_MS, SEEN_TTL_MS, MAX_SEEN, queues2, seen2;
+var init_auto_join = __esm({
+  "src/services/auto-join.ts"() {
+    "use strict";
+    init_join_manager();
+    init_tri_bucket();
+    init_workspace();
+    init_logger();
+    AUTOJOIN_DELAY_MS = 4e3;
+    SEEN_TTL_MS = 24 * 60 * 6e4;
+    MAX_SEEN = 200;
+    queues2 = /* @__PURE__ */ new Map();
+    seen2 = /* @__PURE__ */ new Map();
+  }
+});
+
 // src/whatsapp/commands/tag.ts
 async function getParticipants(socket, groupJid) {
   try {
@@ -13055,6 +13161,7 @@ var init_menu_registry = __esm({
       mtag: { section: "\u{1F4CA} UTILITY", syntax: "mtag", desc: "Visibly mention all group members", target: "both" },
       // ── Lifecycle ─────────────────────────────────────────────
       join: { section: "\u{1F4CA} UTILITY", syntax: "join [link]", desc: "Join a group by invite link", target: "main" },
+      autojoin: { section: "\u{1F4CA} UTILITY", syntax: "autojoin <on|off|status>", desc: "Automatically join valid invite links seen by this session", target: "both", usage: "Enable or disable background joining for this WhatsApp session. Already joined groups are skipped automatically.", permissions: "Owner / Sudo", examples: ["autojoin on", "autojoin off", "autojoin status"] },
       left: { section: "\u{1F4CA} UTILITY", syntax: "left", desc: "Leave the current group", target: "main" },
       leave: { section: "\u{1F4CA} UTILITY", syntax: "leave [jid]", desc: "Leave a specific group by JID", target: "main" },
       joinall: { section: "\u{1F4CA} UTILITY", syntax: "joinall", desc: "Join every link in the active bucket", target: "main" },
@@ -14022,7 +14129,7 @@ function linkCollectionKeyboard(sessionId) {
     [btn("Back", `session:${sessionId}:menu`, "primary")]
   ] };
 }
-function joinManagerKeyboard(sessionId, status) {
+function joinManagerKeyboard(sessionId, status, autoJoinOn = false) {
   const controls = [];
   if (status === "running") controls.push(btn("\u23F8 Pause", `session:${sessionId}:join:pause`, "danger"));
   else controls.push(btn(status === "paused" ? "\u25B6\uFE0F Resume" : "\u25B6\uFE0F Start", `session:${sessionId}:join:start`, "success"));
@@ -14032,6 +14139,7 @@ function joinManagerKeyboard(sessionId, status) {
     btn("\u23F1 Set Delay", `session:${sessionId}:join:setdelay`, "primary")
   ];
   const rows = [controls];
+  rows.push([btn(autoJoinOn ? "\u{1F7E2} AutoJoin ON" : "\u26AA AutoJoin OFF", `session:${sessionId}:join:${autoJoinOn ? "autojoin-off" : "autojoin-on"}`, autoJoinOn ? "success" : "primary")]);
   rows.push(navRow);
   if (status !== "running") rows.push([btn("\u{1F501} Batch Cycles", `session:${sessionId}:join:setbatch`, "primary")]);
   rows.push([btn("\u{1F504} Refresh", `session:${sessionId}:joinmgr`, "primary")]);
@@ -14682,21 +14790,36 @@ async function handleJoinManager(ctx, sessionId, operation) {
     const { loadSessionMeta: lsm } = await Promise.resolve().then(() => (init_workspace(), workspace_exports));
     const m = lsm(ownerId, sessionId);
     const configuredTarget = Math.max(0, Number(m?.joinSettings?.maxLinksPerRun ?? 0));
+    const resetCount = resetRetryableJoinFailuresForStart(ownerId);
     const availableActive = getSessionJoinableLinkCount(ownerId, sessionId);
-    const target = configuredTarget > 0 ? configuredTarget : availableActive;
+    const target = configuredTarget > 0 ? Math.min(configuredTarget, availableActive) : availableActive;
     const delayMs = Math.max(0, Number(m?.joinSettings?.delayMs ?? 0));
     const batchCycles = Math.max(0, Number(m?.joinSettings?.batchCycles ?? 0));
-    try {
-      startJoinManager(ownerId, sessionId, socket, {
-        targetCount: target,
-        ...target > 0 ? { maxLinksPerRun: target } : {},
-        ...delayMs > 0 ? { minDelayMs: delayMs, maxDelayMs: delayMs + 2e3 } : {},
-        ...batchCycles > 0 ? { batchCycles } : {}
+    if (availableActive <= 0) {
+      await ctx.answerCbQuery("No retryable Active links remain. Add or restore a valid link first.", { show_alert: true }).catch(() => {
       });
-      await ctx.answerCbQuery("Join Manager starting\u2026").catch(() => {
+    } else {
+      try {
+        startJoinManager(ownerId, sessionId, socket, {
+          targetCount: target,
+          ...target > 0 ? { maxLinksPerRun: target } : {},
+          ...delayMs > 0 ? { minDelayMs: delayMs, maxDelayMs: delayMs + 2e3 } : {},
+          ...batchCycles > 0 ? { batchCycles } : {}
+        });
+        await ctx.answerCbQuery(resetCount > 0 ? `Retrying ${resetCount} failed Active link${resetCount === 1 ? "" : "s"}\u2026` : "Join Manager starting\u2026").catch(() => {
+        });
+      } catch (error2) {
+        await ctx.answerCbQuery(String(error2).slice(0, 190), { show_alert: true }).catch(() => {
+        });
+      }
+    }
+  } else if (operation === "autojoin-on" || operation === "autojoin-off") {
+    const enabled = operation === "autojoin-on";
+    if (!setAutoJoinEnabled(ownerId, sessionId, enabled)) {
+      await ctx.answerCbQuery("Session metadata unavailable", { show_alert: true }).catch(() => {
       });
-    } catch (error2) {
-      await ctx.answerCbQuery(String(error2).slice(0, 190), { show_alert: true }).catch(() => {
+    } else {
+      await ctx.answerCbQuery(enabled ? "AutoJoin enabled" : "AutoJoin disabled").catch(() => {
       });
     }
   } else if (operation === "pause") {
@@ -14746,7 +14869,7 @@ async function handleJoinManager(ctx, sessionId, operation) {
     ], state.currentLink ? `Current: ${state.currentLink.slice(-40)}` : "Jobs stop at 5 rate limit hits."),
     H.blockquote(logs2, true)
   ].join("\n\n");
-  const menuMarkup = joinManagerKeyboard(sessionId, state.status);
+  const menuMarkup = joinManagerKeyboard(sessionId, state.status, autoJoinEnabled(ownerId, sessionId));
   const callbackSource = ctx.callbackQuery?.message;
   const sourceIsPhoto = Boolean(callbackSource?.photo);
   const sentMsg = await ctx.editMessageText(msgText, {
@@ -14796,7 +14919,7 @@ async function handleJoinManager(ctx, sessionId, operation) {
         ], liveState.currentLink ? `Current: ${liveState.currentLink.slice(-40)}` : ""),
         H.blockquote(ll, true)
       ].join("\n\n");
-      const liveMarkup = joinManagerKeyboard(sessionId, liveState.status);
+      const liveMarkup = joinManagerKeyboard(sessionId, liveState.status, autoJoinEnabled(ownerId, sessionId));
       const updateLive = sourceIsPhoto && typeof ctx.telegram.editMessageCaption === "function" ? ctx.telegram.editMessageCaption(chatId, msgId, void 0, lt, { parse_mode: "HTML", reply_markup: liveMarkup }) : ctx.telegram.editMessageText(chatId, msgId, void 0, lt, { parse_mode: "HTML", reply_markup: liveMarkup });
       await updateLive.catch(() => {
       });
@@ -14843,6 +14966,7 @@ var init_session = __esm({
     init_keyboards();
     init_formatter();
     init_join_manager();
+    init_auto_join();
     activeJoinSubs = /* @__PURE__ */ new Map();
     bridgeSessions = /* @__PURE__ */ new Map();
   }
@@ -19598,7 +19722,7 @@ function isTransientParticipantError(err) {
   const text2 = String(err instanceof Error ? err.message : err).toLowerCase();
   return /\btimed?\s*out\b/.test(text2) || /\btimeout\b/.test(text2) || /\brate\b/.test(text2) || /\btoo\s+many\b/.test(text2) || /\btemporar/.test(text2) || /\bagain\b/.test(text2) || /\bunavailable\b/.test(text2) || /\binternal[-\s]server[-\s]error\b/.test(text2) || /\b500\b/.test(text2) || /\b503\b/.test(text2) || /\b429\b/.test(text2);
 }
-async function sleep4(ms) {
+async function sleep5(ms) {
   await new Promise((resolve) => setTimeout(resolve, ms));
 }
 async function removeParticipantWithRetry(socket, groupJid, participantJid) {
@@ -19623,7 +19747,7 @@ async function removeParticipantWithRetry(socket, groupJid, participantJid) {
           });
           if (!isTransientParticipantError(String(entry.status))) throw statusErr;
           lastErr = statusErr;
-          if (attempt < 3) await sleep4(300 * attempt);
+          if (attempt < 3) await sleep5(300 * attempt);
           continue;
         }
       }
@@ -19637,7 +19761,7 @@ async function removeParticipantWithRetry(socket, groupJid, participantJid) {
         err
       });
       if (attempt === 3 || !isTransientParticipantError(err)) break;
-      await sleep4(300 * attempt);
+      await sleep5(300 * attempt);
     }
   }
   throw lastErr;
@@ -20182,7 +20306,7 @@ async function inspectBulkCandidates(socket, telegramId, sessionId, groupJid, ki
     ...config2.ownerWaNumbers ?? [],
     ...config2.trustedAdminNumbers ?? []
   ];
-  const seen2 = /* @__PURE__ */ new Set();
+  const seen3 = /* @__PURE__ */ new Set();
   const candidates = [];
   let matched = 0;
   let protectedCount = 0;
@@ -20191,8 +20315,8 @@ async function inspectBulkCandidates(socket, telegramId, sessionId, groupJid, ki
     if (kind === "filterout" && (!countryCode || !phone.startsWith(countryCode))) continue;
     if (kind === "filterout") matched++;
     const realJid = resolveRealJidFromMeta(meta.participants, participant.id);
-    if (!realJid || realJid.endsWith("@lid") || seen2.has(realJid)) continue;
-    seen2.add(realJid);
+    if (!realJid || realJid.endsWith("@lid") || seen3.has(realJid)) continue;
+    seen3.add(realJid);
     if (protectedParticipant(meta, participant, socket, sudoNumbers)) {
       protectedCount++;
       continue;
@@ -21303,7 +21427,7 @@ function onboardingMethodCard(label, phone) {
 function helpText(isOwner) {
   return generateTelegramHelp(isOwner);
 }
-function sleep5(ms) {
+function sleep6(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 function buildBulkProgressText(op, done, remaining, failed) {
@@ -21924,7 +22048,7 @@ function createBot() {
             }
           }
         }
-        if (i + BATCH < toApprove.length) await sleep5(800);
+        if (i + BATCH < toApprove.length) await sleep6(800);
       }
       const remaining = pending.length - toApprove.length;
       await ctx.reply([
@@ -21995,7 +22119,7 @@ function createBot() {
             }
           }
         }
-        if (i + BATCH < matched.length) await sleep5(800);
+        if (i + BATCH < matched.length) await sleep6(800);
       }
       const remaining = pending.length - matched.length;
       await ctx.reply([
@@ -24160,7 +24284,7 @@ Use <b>Tutorial</b> for provider instructions.`,
           await ctx.telegram.editMessageText(ctx.chat.id, progressMsg.message_id, void 0, progressText, { parse_mode: "HTML" }).catch(() => {
           });
         }
-        if (i + BATCH < toKick.length) await sleep5(1200);
+        if (i + BATCH < toKick.length) await sleep6(1200);
       }
       const finalText = buildBulkCompleteText("Kick All Members", removed, failed);
       if (progressMsg) {
@@ -24246,7 +24370,7 @@ Use <b>Tutorial</b> for provider instructions.`,
           await ctx.telegram.editMessageText(ctx.chat.id, progressMsg.message_id, void 0, buildBulkProgressText("Kick All Admins", removed, toKick.length - removed - failed, failed), { parse_mode: "HTML" }).catch(() => {
           });
         }
-        if (i + BATCH < toKick.length) await sleep5(1200);
+        if (i + BATCH < toKick.length) await sleep6(1200);
       }
       if (progressMsg) {
         await ctx.telegram.editMessageText(ctx.chat.id, progressMsg.message_id, void 0, buildBulkCompleteText("Kick All Admins", removed, failed), { parse_mode: "HTML", reply_markup: backKeyboard(`gcset:${sessionId}:${gcKey}`) }).catch(() => {
@@ -24331,7 +24455,7 @@ Use <b>Tutorial</b> for provider instructions.`,
           await ctx.telegram.editMessageText(ctx.chat.id, progressMsg.message_id, void 0, buildBulkProgressText("Demote All Admins", demoted, toDemote.length - demoted - failed, failed), { parse_mode: "HTML" }).catch(() => {
           });
         }
-        if (i + BATCH < toDemote.length) await sleep5(1200);
+        if (i + BATCH < toDemote.length) await sleep6(1200);
       }
       if (progressMsg) {
         await ctx.telegram.editMessageText(ctx.chat.id, progressMsg.message_id, void 0, buildBulkCompleteText("Demote All Admins", demoted, failed), { parse_mode: "HTML", reply_markup: backKeyboard(`gcset:${sessionId}:${gcKey}`) }).catch(() => {
@@ -24442,7 +24566,7 @@ Use <b>Tutorial</b> for provider instructions.`,
           await ctx.telegram.editMessageText(ctx.chat.id, progressMsg.message_id, void 0, buildApproveProgressText(approved, pending.length - approved - failed, failed), { parse_mode: "HTML" }).catch(() => {
           });
         }
-        if (i + BATCH < pending.length) await sleep5(800);
+        if (i + BATCH < pending.length) await sleep6(800);
       }
       const finalText = [
         `<b>\u2705 Approve All \u2014 Complete</b>`,
@@ -27030,7 +27154,7 @@ function extractPinterestBingUrlsDetailed(html, requirePinimg = false) {
     }
   }).length;
   const urls = [];
-  const seen2 = /* @__PURE__ */ new Set();
+  const seen3 = /* @__PURE__ */ new Set();
   const bestPinimg = /* @__PURE__ */ new Map();
   let pinterestSourceCandidateCount = 0;
   let rejectedUrlCount = 0;
@@ -27080,8 +27204,8 @@ function extractPinterestBingUrlsDetailed(html, requirePinimg = false) {
       continue;
     }
     const canonical = parsed.toString();
-    if (!seen2.has(canonical)) {
-      seen2.add(canonical);
+    if (!seen3.has(canonical)) {
+      seen3.add(canonical);
       urls.push(canonical);
     }
   }
@@ -27970,14 +28094,14 @@ var init_DownloadManager = __esm({
       async pinterestSearchUrls(query, count) {
         const normalizedQuery = query.trim();
         const capped = Math.min(Math.max(count, 1), MAX_PINT_IMAGES);
-        const seen2 = /* @__PURE__ */ new Set();
+        const seen3 = /* @__PURE__ */ new Set();
         let apiSucceeded = false;
         try {
           const apiUrls = await this.pinterestApi(normalizedQuery, capped * 2);
           apiSucceeded = true;
           for (const u of apiUrls) {
-            if (seen2.size >= capped) break;
-            if (u && !seen2.has(u)) seen2.add(u);
+            if (seen3.size >= capped) break;
+            if (u && !seen3.has(u)) seen3.add(u);
           }
         } catch (err) {
           logger.debug("[Media] Pinterest resource search unavailable", {
@@ -27986,11 +28110,11 @@ var init_DownloadManager = __esm({
             error: err instanceof MediaDownloadError ? err.code : "request-failed"
           });
         }
-        if (seen2.size < capped) {
+        if (seen3.size < capped) {
           const bing = await this.bingPinterestUrls(normalizedQuery, capped * 3);
           for (const u of bing.urls) {
-            if (seen2.size >= capped) break;
-            if (isPinterestHostedImageUrl(u) && !seen2.has(u)) seen2.add(u);
+            if (seen3.size >= capped) break;
+            if (isPinterestHostedImageUrl(u) && !seen3.has(u)) seen3.add(u);
           }
           logger.debug("[Media] Pinterest search diagnostics", {
             queryHash: queryFingerprint(normalizedQuery),
@@ -28002,9 +28126,9 @@ var init_DownloadManager = __esm({
             pinterestSourceCandidateCount: bing.pinterestSourceCandidateCount,
             extractedImageUrlCount: bing.extractedImageUrlCount,
             rejectedUrlCount: bing.rejectedUrlCount,
-            finalUsableResultCount: seen2.size
+            finalUsableResultCount: seen3.size
           });
-          if (seen2.size === 0 && bing.pinterestSourceCandidateCount > 0 && bing.extractedImageUrlCount === 0) {
+          if (seen3.size === 0 && bing.pinterestSourceCandidateCount > 0 && bing.extractedImageUrlCount === 0) {
             throw new MediaDownloadError("Pinterest results could not be extracted right now.", "extraction-failed");
           }
         } else {
@@ -28013,13 +28137,13 @@ var init_DownloadManager = __esm({
             queryLength: normalizedQuery.length,
             apiSucceeded,
             candidateCount: void 0,
-            pinterestHostedCandidateCount: seen2.size,
-            extractedImageUrlCount: seen2.size,
+            pinterestHostedCandidateCount: seen3.size,
+            extractedImageUrlCount: seen3.size,
             rejectedUrlCount: 0,
-            finalUsableResultCount: seen2.size
+            finalUsableResultCount: seen3.size
           });
         }
-        return [...seen2].slice(0, capped);
+        return [...seen3].slice(0, capped);
       }
       /**
        * Download Pinterest search results as VALIDATED images. Each pin URL
@@ -30807,7 +30931,7 @@ var require_package = __commonJS({
   "package.json"(exports, module) {
     module.exports = {
       name: "@workspace/wa-bridge",
-      version: "1.2.2",
+      version: "1.2.3",
       description: "Telegram \u2194 WhatsApp Automation Bridge \u2014 Production-Grade Multi-Device Control Center",
       type: "module",
       main: "dist/index.js",
@@ -30822,7 +30946,7 @@ var require_package = __commonJS({
         deploy: "tsx src/scripts/deploy.ts"
       },
       dependencies: {
-        "@crysnovax/baileys": "^2.7.5",
+        "@crysnovax/baileys": "^2.7.10",
         "@hapi/boom": "^10.0.1",
         "@omega/client": "workspace:*",
         "@omega/protocol": "workspace:*",
@@ -31391,7 +31515,7 @@ function normalizeNumber3(jid) {
   if (!jid) return "";
   return (jid.split("@")[0] ?? "").split(":")[0].replace(/\D/g, "");
 }
-function sleep6(ms) {
+function sleep7(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 async function retryGroupUpdate(socket, groupJid, participants, action, maxAttempts = 5) {
@@ -31410,7 +31534,7 @@ async function retryGroupUpdate(socket, groupJid, participants, action, maxAttem
         delay,
         err: String(err)
       });
-      if (attempt < maxAttempts - 1) await sleep6(delay);
+      if (attempt < maxAttempts - 1) await sleep7(delay);
     }
   }
   return false;
@@ -32053,9 +32177,9 @@ function addListText(texts, list) {
     }
   }
 }
-function collectSenderText(message, texts, seen2, depth) {
-  if (depth > 16 || seen2.has(message)) return;
-  seen2.add(message);
+function collectSenderText(message, texts, seen3, depth) {
+  if (depth > 16 || seen3.has(message)) return;
+  seen3.add(message);
   addText(texts, message["conversation"]);
   const extended = message["extendedTextMessage"];
   if (extended && typeof extended === "object") {
@@ -32134,14 +32258,14 @@ function collectSenderText(message, texts, seen2, depth) {
     if (!wrapper || typeof wrapper !== "object") continue;
     const inner = wrapper["message"];
     if (inner && typeof inner === "object") {
-      collectSenderText(inner, texts, seen2, depth + 1);
+      collectSenderText(inner, texts, seen3, depth + 1);
     }
   }
   const protocol = message["protocolMessage"];
   if (protocol && typeof protocol === "object") {
     const edited = protocol["editedMessage"];
     if (edited && typeof edited === "object") {
-      collectSenderText(edited, texts, seen2, depth + 1);
+      collectSenderText(edited, texts, seen3, depth + 1);
     }
   }
 }
@@ -32200,7 +32324,7 @@ function normalizeCandidate(raw) {
 function extractUrls(text2) {
   if (!text2) return [];
   const found = [];
-  const seen2 = /* @__PURE__ */ new Set();
+  const seen3 = /* @__PURE__ */ new Set();
   URL_CANDIDATE_RE.lastIndex = 0;
   let match;
   while ((match = URL_CANDIDATE_RE.exec(text2)) !== null) {
@@ -32213,8 +32337,8 @@ function extractUrls(text2) {
       continue;
     }
     const key2 = url.toLowerCase();
-    if (!seen2.has(key2)) {
-      seen2.add(key2);
+    if (!seen3.has(key2)) {
+      seen3.add(key2);
       found.push(url);
     }
   }
@@ -32223,12 +32347,12 @@ function extractUrls(text2) {
 }
 function messageLinks(msg) {
   const found = [];
-  const seen2 = /* @__PURE__ */ new Set();
+  const seen3 = /* @__PURE__ */ new Set();
   for (const text2 of extractSenderTexts(msg)) {
     for (const url of extractUrls(text2)) {
       const key2 = url.toLowerCase();
-      if (seen2.has(key2)) continue;
-      seen2.add(key2);
+      if (seen3.has(key2)) continue;
+      seen3.add(key2);
       found.push(url);
     }
   }
@@ -33917,7 +34041,7 @@ var init_join_approval = __esm({
 });
 
 // src/services/approval-engine.ts
-function queueKey(sessionId, groupJid) {
+function queueKey2(sessionId, groupJid) {
   return `${sessionId}:${groupJid}`;
 }
 function completedFor(key2) {
@@ -33945,11 +34069,11 @@ async function withGroupLock(key2, work) {
   }
 }
 function uniquePending(requests, completed) {
-  const seen2 = /* @__PURE__ */ new Set();
+  const seen3 = /* @__PURE__ */ new Set();
   return requests.filter((request) => {
     const jid = String(request?.jid ?? "").trim();
-    if (!jid || seen2.has(jid) || completed.has(jid)) return false;
-    seen2.add(jid);
+    if (!jid || seen3.has(jid) || completed.has(jid)) return false;
+    seen3.add(jid);
     return true;
   });
 }
@@ -33998,7 +34122,7 @@ async function runPendingRequestOperation(opts) {
     throw new Error(`Unknown country code: ${opts.countryCode}`);
   }
   const normalizedCountry = opts.countryCode ? normalizeCountryInput(opts.countryCode) : void 0;
-  const key2 = queueKey(opts.sessionId, opts.groupJid);
+  const key2 = queueKey2(opts.sessionId, opts.groupJid);
   return withGroupLock(key2, async () => {
     const completed = completedFor(key2);
     const allPending = await freshPending(opts, completed);
@@ -34062,7 +34186,7 @@ async function runPendingRequestOperation(opts) {
 async function countPendingRequests(opts) {
   const normalizedCountry = opts.countryCode ? normalizeCountryInput(opts.countryCode) : void 0;
   if (opts.countryCode && !normalizedCountry) throw new Error(`Unknown country code: ${opts.countryCode}`);
-  const key2 = queueKey(opts.sessionId, opts.groupJid);
+  const key2 = queueKey2(opts.sessionId, opts.groupJid);
   return withGroupLock(key2, async () => {
     const requests = await freshPending(opts, completedFor(key2));
     if (!normalizedCountry) return requests.length;
@@ -37690,6 +37814,9 @@ async function processMessageWithConfig(sessionId, telegramId, msg, socket, repl
   }
   forensicParseMs = nowMs() - forensicParseStartedAt;
   if (!parsed) {
+    if (!msg.key.fromMe && text2) {
+      observeAutoJoinLinks(telegramId, sessionId, socket, text2);
+    }
     traceRoute(messageTrace, text2 ? "normal-text" : "unsupported-message");
     if (text2 && /^\d{1,2}$/.test(text2.trim())) {
       const senderJid2 = normalizeUserJid(
@@ -39919,6 +40046,37 @@ Usage: ${config2.prefix}settheme <theme>`));
       await reply(res.success ? successCard("LEFT GROUP", "Successfully left the target group.") : errorCard("LEAVE FAILED", res.error ?? "WhatsApp rejected the leave request."));
       break;
     }
+    // ── autojoin ──
+    case "autojoin": {
+      const action = (args[0] ?? "status").toLowerCase();
+      if (!["on", "off", "status"].includes(action)) {
+        await reply(warningCard("AUTOJOIN", `Usage: ${config2.prefix}autojoin <on|off|status>`));
+        break;
+      }
+      if (action === "status") {
+        const meta = loadSessionMeta(telegramId, sessionId);
+        const setting = meta?.autoJoin;
+        await reply(asciiBox({
+          title: "AUTOJOIN STATUS",
+          emoji: "\u{1F517}",
+          rows: [
+            ["Status", autoJoinEnabled(telegramId, sessionId) ? "ON" : "OFF"],
+            ["Session", sessionId],
+            ["Last link", setting?.lastLink ?? "\u2014"],
+            ["Last result", setting?.lastResult ?? "\u2014"]
+          ],
+          footer: "When ON, valid invite links in ordinary messages are joined in the background; existing memberships are skipped."
+        }));
+        break;
+      }
+      const enabled = action === "on";
+      if (!setAutoJoinEnabled(telegramId, sessionId, enabled)) {
+        await reply(errorCard("AUTOJOIN FAILED", "This WhatsApp session metadata is unavailable."));
+        break;
+      }
+      await reply(successCard(`AUTOJOIN ${enabled ? "ENABLED" : "DISABLED"}`, enabled ? "Invite links seen by this session will be joined in the background. Already joined groups are skipped." : "Background invite-link joining is now off."));
+      break;
+    }
     // ── joinall ──
     case "joinall": {
       const links = resolveJoinAllInviteLinks(parsed.rawRemainder, quotedText);
@@ -41120,6 +41278,7 @@ var init_event_handlers = __esm({
     init_lifecycle();
     init_tri_bucket();
     init_join_manager();
+    init_auto_join();
     init_tag();
     init_workspace();
     init_logger();
@@ -42309,6 +42468,7 @@ __export(workspace_exports, {
   removeGlobalSudoNumbers: () => removeGlobalSudoNumbers,
   removeOmniOwnerNumbers: () => removeOmniOwnerNumbers,
   removeTelegramSudoId: () => removeTelegramSudoId,
+  resetRetryableJoinFailures: () => resetRetryableJoinFailures,
   retireActiveLink: () => retireActiveLink,
   retryJoinClaim: () => retryJoinClaim,
   saveBucket: () => saveBucket,
@@ -43540,6 +43700,32 @@ function retryJoinClaim(telegramId, canonicalKey, retryAt, failureReason, fence,
     state.updatedAt = Date.now();
     atomicWriteJson2(joinStatePath(telegramId), state);
     return true;
+  });
+}
+function resetRetryableJoinFailures(telegramId) {
+  return withWorkspaceMutationLock(telegramId, () => {
+    const activeKeys = new Set(loadBucket(telegramId, "active").map((entry) => entry.canonicalKey ?? canonicalLinkKey(entry.link)));
+    const state = loadJoinState(telegramId);
+    let reset = 0;
+    for (const [key2, record] of Object.entries(state.records)) {
+      if (!activeKeys.has(key2) || record.status !== "FAILED") continue;
+      record.status = "AVAILABLE";
+      record.attempts = 0;
+      record.retryAt = void 0;
+      record.result = void 0;
+      record.failureReason = void 0;
+      record.jobId = void 0;
+      record.sessionId = void 0;
+      record.claimedAt = void 0;
+      record.leaseUntil = void 0;
+      record.lastError = void 0;
+      reset++;
+    }
+    if (reset > 0) {
+      state.updatedAt = Date.now();
+      atomicWriteJson2(joinStatePath(telegramId), state);
+    }
+    return reset;
   });
 }
 function releaseJoinClaims(telegramId, jobId) {

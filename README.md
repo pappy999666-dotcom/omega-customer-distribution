@@ -1,4 +1,4 @@
-# Omega Customer Bot 1.2.2
+# Omega Customer Bot 1.2.3
 
 This repository publishes the source-protected Omega customer runtime. Customers deploy with one file: the root `index.js` bootstrap. It downloads the verified stable runtime, installs production dependencies, preserves the previous working release when an update fails, and starts the local bot.
 
@@ -37,6 +37,20 @@ redis-cli -u redis://default:password@host:15606
 ```
 
 Do not publish Redis passwords, SSH keys, MongoDB credentials, Core tokens, or panel tokens in this repository or in screenshots.
+
+## Join Manager and AutoJoin
+
+The Telegram Link Join Manager now treats temporary WhatsApp, network, and rate-limit failures as retryable. Pressing Start reopens retryable Active links and tells you clearly when no eligible work remains; proven invalid or revoked links stay retired.
+
+The Join Manager panel includes AutoJoin On/Off controls. WhatsApp also supports:
+
+```text
+.autojoin on
+.autojoin off
+.autojoin status
+```
+
+When enabled for a session, valid WhatsApp invite links seen in ordinary messages are queued in the background. Normal commands remain responsive, duplicate links are coalesced, and groups the session already belongs to are skipped automatically.
 
 ## VPS deployment
 
