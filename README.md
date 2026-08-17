@@ -1,4 +1,4 @@
-# Omega Customer Bot 1.2.21
+# Omega Customer Bot 1.2.22
 
 This repository publishes the source-protected Omega customer runtime. Customers deploy with one file: the root `index.js` bootstrap. It downloads the verified stable runtime, installs production dependencies, preserves the previous working release when an update fails, and starts the local bot.
 
@@ -22,11 +22,11 @@ The setup then asks for the personal WhatsApp number that should control the cus
 
 The setup asks for a short WhatsApp session name first, then the WhatsApp number. Use names such as `Main`, `Work`, or `Store` so multiple connections remain easy to identify. Enter the full number with country code and no spaces, for example `2348012345678`. Pairing has a one-minute countdown. A successful session is preserved across restarts. Failed, expired, revoked, or abandoned pairing attempts are removed immediately, so stale Pair or Resume buttons are not retained.
 
-On later restarts, completed Telegram setup, owner identity, and existing WhatsApp sessions are reused. Only missing configuration is requested. The customer owner can use the Telegram **Restart Customer Bot** button or `/restart`; the panel process manager will bring the bot back with saved sessions and settings. Session controls include **Set Name**, **Pair/Resume**, and **Purge**. Purge closes the socket and removes the selected session’s authentication and metadata without touching other sessions. The runtime reports a session as ready only after its WhatsApp socket is operational, so a stale durable ACTIVE record is never presented as usable. If the panel still reports a live owner, press **Stop**, wait for the old process to exit, and then press **Start** once.
+On later restarts, completed Telegram setup, owner identity, and existing WhatsApp sessions are reused. Only missing configuration is requested. The customer owner can use the Telegram **Restart Customer Bot** button or `/restart` when intentionally restarting; Redis changes and parent policy/runtime updates apply automatically without requiring that button. Session controls include **Set Name**, **Pair/Resume**, and **Purge**. Purge closes the socket and removes the selected session’s authentication and metadata without touching other sessions. The runtime reports a session as ready only after its WhatsApp socket is operational, so a stale durable ACTIVE record is never presented as usable. If the panel still reports a live owner, press **Stop**, wait for the old process to exit, and then press **Start** once.
 
 ## Optional Redis
 
-Redis is optional for ordinary WhatsApp and Telegram commands. Redis-backed queues and bulk workers show a degraded status when Redis is unavailable instead of preventing normal bot startup.
+Redis is optional for ordinary WhatsApp and Telegram commands. Redis-backed queues and bulk workers show a degraded status when Redis is unavailable instead of preventing normal bot startup. From Telegram **Settings → Redis Storage**, paste either a `redis://…` URL or the full `redis-cli -u redis://…` command. The runtime validates the endpoint, persists it through the authenticated parent Core, hot-rebinds workers immediately, and does not require a restart. **Clear Redis** stops only queue workers and leaves ordinary commands available.
 
 A normal Redis URL is accepted:
 

@@ -242,6 +242,7 @@ function ownerFor(sessionId, telegramId) {
 function canAutoReconnect(meta) {
   if (!meta) return false;
   if (hasExplicitFreeze(meta)) return false;
+  if (!meta.pairedAt && ["RECONNECTING", "DISCONNECTED", "FAILED"].includes(meta.status)) return false;
   return meta.status === "ACTIVE" || meta.status === "CONNECTING" || meta.status === "RECONNECTING" || meta.status === "DISCONNECTED" || meta.status === "PAIRING";
 }
 function markConnecting(telegramId, sessionId, opts = {}) {
@@ -7633,7 +7634,7 @@ function redisOptions(db, keyPrefix) {
   };
 }
 function redisFromLease(lease) {
-  const url = lease.mode === "HOSTED" ? normalizeRedisUrl(lease.redisUrl) : configuredRedisUrl();
+  const url = normalizeRedisUrl(lease.redisUrl) ?? (lease.mode === "HOSTED" ? void 0 : configuredRedisUrl());
   const explicitHost = process.env.REDIS_HOST?.trim();
   const localMode = process.env.OMEGA_STORAGE_MODE?.trim() === "LOCAL" || process.env.OMEGA_ALLOW_LOCAL_REDIS?.trim() === "true" || process.env.OMEGA_RUNTIME_ROLE === "operator";
   if (!url && !explicitHost && !localMode) {
@@ -7723,6 +7724,7 @@ __export(queue_exports, {
   cancelSessionJobs: () => cancelSessionJobs,
   cleanupOrphanedJobs: () => cleanupOrphanedJobs,
   createRedis: () => createRedis,
+  disableQueueStorage: () => disableQueueStorage,
   enqueueJob: () => enqueueJob,
   getActiveStorageLease: () => getActiveStorageLease,
   getMongoDb: () => getMongoDb,
@@ -7730,6 +7732,8 @@ __export(queue_exports, {
   getQueueEvents: () => getQueueEvents,
   getRedis: () => getRedis,
   getSubRedis: () => getSubRedis,
+  hasQueueWorkers: () => hasQueueWorkers,
+  isQueueStorageEnabled: () => isQueueStorageEnabled,
   isStorageRebinding: () => isStorageRebinding,
   lifecycleQueue: () => lifecycleQueue,
   manualAllStatusQueue: () => manualAllStatusQueue,
@@ -7739,6 +7743,7 @@ __export(queue_exports, {
   registerWorker: () => registerWorker,
   registerWorkerFactory: () => registerWorkerFactory,
   resumeStalledJobs: () => resumeStalledJobs,
+  setQueueStorageEnabled: () => setQueueStorageEnabled,
   shutdownQueues: () => shutdownQueues,
   startQueueMaintenance: () => startQueueMaintenance,
   validatorQueue: () => validatorQueue
@@ -7790,6 +7795,15 @@ function getActiveStorageLease() {
 }
 function isStorageRebinding() {
   return storageRebindInProgress;
+}
+function isQueueStorageEnabled() {
+  return queueStorageEnabled;
+}
+function setQueueStorageEnabled(enabled) {
+  queueStorageEnabled = enabled;
+}
+function assertQueueStorageEnabled() {
+  if (!queueStorageEnabled) throw new Error("REDIS_UNAVAILABLE: queue-backed work is paused; ordinary commands remain available.");
 }
 function registerWorkerFactory(factory) {
   workerFactories.add(factory);
@@ -7851,6 +7865,7 @@ async function rebindStorage(lease, deploymentId, workspaceId) {
     await closeQueueHandles();
     _redis = candidate.redis;
     _subRedis = candidate.subRedis;
+    queueStorageEnabled = true;
     _mongoClient = candidate.mongo ?? null;
     _mongoDb = candidate.mongoDb ?? null;
     activeStorageLease = { ...lease };
@@ -7882,13 +7897,35 @@ async function rebindStorage(lease, deploymentId, workspaceId) {
     storageRebindInProgress = false;
   }
 }
+async function disableQueueStorage(lease) {
+  storageRebindInProgress = true;
+  try {
+    await closeQueueHandles().catch(() => {
+    });
+    _redis?.disconnect();
+    _subRedis?.disconnect();
+    await _mongoClient?.close().catch(() => {
+    });
+    _redis = null;
+    _subRedis = null;
+    _mongoClient = null;
+    _mongoDb = null;
+    queueStorageEnabled = false;
+    if (lease) activeStorageLease = { ...lease, redisUrl: void 0, mongoUri: void 0 };
+    logger.info("[Storage] Optional queue storage disabled; ordinary commands remain available");
+  } finally {
+    storageRebindInProgress = false;
+  }
+}
 function getSubRedis() {
+  assertQueueStorageEnabled();
   if (!_subRedis) {
     _subRedis = createRedis();
   }
   return _subRedis;
 }
 function getQueue(name) {
+  assertQueueStorageEnabled();
   if (!queues.has(name)) {
     const q = new Queue(name, {
       connection: getRedis(),
@@ -7918,6 +7955,7 @@ async function resumeStalledJobs() {
   }
 }
 async function enqueueJob(queueName, payload, opts) {
+  assertQueueStorageEnabled();
   if (storageRebindInProgress) throw new Error("STORAGE_REBIND_IN_PROGRESS");
   const queue = getQueue(queueName);
   const jobId = opts?.jobId;
@@ -7980,11 +8018,15 @@ function startQueueMaintenance() {
   queueMaintenanceTimer.unref?.();
 }
 function getQueueEvents(name) {
+  assertQueueStorageEnabled();
   if (!queueEvents.has(name)) {
     const qe = new QueueEvents(name, { connection: getSubRedis() });
     queueEvents.set(name, qe);
   }
   return queueEvents.get(name);
+}
+function hasQueueWorkers() {
+  return workers.length > 0;
 }
 function registerWorker(worker) {
   workers.push(worker);
@@ -8023,7 +8065,7 @@ async function shutdownQueues() {
   _mongoDb = null;
   logger.info("[Queue] Shutdown complete");
 }
-var _redis, _subRedis, _mongoClient, _mongoDb, lastRedisErrorAt, activeStorageLease, storageRebindInProgress, workerFactories, QUEUE_NAMES, queues, outreachQueue, validatorQueue, lifecycleQueue, omniQueue, allStatusQueue, manualAllStatusQueue, autoPromoteAllStatusQueue, queueEvents, workers, queueMaintenanceTimer, STALE_WAITING_JOB_MS, STALE_DELAYED_JOB_MS;
+var _redis, _subRedis, _mongoClient, _mongoDb, lastRedisErrorAt, activeStorageLease, storageRebindInProgress, queueStorageEnabled, workerFactories, QUEUE_NAMES, queues, outreachQueue, validatorQueue, lifecycleQueue, omniQueue, allStatusQueue, manualAllStatusQueue, autoPromoteAllStatusQueue, queueEvents, workers, queueMaintenanceTimer, STALE_WAITING_JOB_MS, STALE_DELAYED_JOB_MS;
 var init_queue = __esm({
   "src/services/queue.ts"() {
     "use strict";
@@ -8036,6 +8078,7 @@ var init_queue = __esm({
     _mongoDb = null;
     lastRedisErrorAt = 0;
     storageRebindInProgress = false;
+    queueStorageEnabled = true;
     workerFactories = /* @__PURE__ */ new Set();
     QUEUE_NAMES = {
       OUTREACH: "wa-outreach",
@@ -14443,12 +14486,14 @@ function makeSessionId(telegramId, sessionName) {
   return `${telegramId}_${safeName2}_${shortId}`;
 }
 function runtimeSessionStatus(meta) {
+  if (["LOGGED_OUT", "PURGED", "PURGING", "FAILED"].includes(meta.status)) return meta.status;
+  if (!meta.pairedAt && meta.status !== "PAIRING" && ["RECONNECTING", "DISCONNECTED"].includes(meta.status)) return "FAILED";
   const health = getSessionHealth(meta.sessionId);
-  if (health?.state === "RECONNECTING" || health?.state === "RECONNECT_FAILED") return "RECONNECTING";
+  if (health?.state === "RECONNECTING" || health?.state === "RECONNECT_FAILED") return meta.pairedAt ? "RECONNECTING" : "FAILED";
   if (health?.state === "DEGRADED" || health?.state === "UNHEALTHY") {
-    return getSocket(meta.sessionId) ? meta.status : "RECONNECTING";
+    return getSocket(meta.sessionId) ? meta.status : meta.pairedAt ? "RECONNECTING" : "FAILED";
   }
-  if (meta.status === "ACTIVE" && !getSocket(meta.sessionId)) return "CONNECTING";
+  if (meta.status === "ACTIVE" && !getSocket(meta.sessionId)) return meta.pairedAt ? "CONNECTING" : "FAILED";
   return meta.status;
 }
 async function handleSessionsList(ctx, page = 0) {
@@ -21648,7 +21693,8 @@ __export(customer_storage_config_exports, {
   clearCustomerRedisUrl: () => clearCustomerRedisUrl,
   getCustomerRedisStatus: () => getCustomerRedisStatus,
   setCustomerRedisUrl: () => setCustomerRedisUrl,
-  validateAndSetCustomerRedisUrl: () => validateAndSetCustomerRedisUrl
+  validateAndSetCustomerRedisUrl: () => validateAndSetCustomerRedisUrl,
+  validateCustomerRedisUrl: () => validateCustomerRedisUrl
 });
 import fs19 from "node:fs";
 import path18 from "node:path";
@@ -21703,7 +21749,7 @@ function setCustomerRedisUrl(input2) {
   persistRedisValue(normalized);
   return normalized;
 }
-async function validateAndSetCustomerRedisUrl(input2) {
+async function validateCustomerRedisUrl(input2) {
   const normalized = normalizeRedisUrl(input2);
   if (!normalized) throw new Error("A Redis URL is required.");
   const probe = new Redis3(normalized, {
@@ -21719,8 +21765,12 @@ async function validateAndSetCustomerRedisUrl(input2) {
   } finally {
     probe.disconnect();
   }
-  setCustomerRedisUrl(normalized);
-  return { display: redactedDisplay(normalized) };
+  return { normalized, display: redactedDisplay(normalized) };
+}
+async function validateAndSetCustomerRedisUrl(input2) {
+  const checked = await validateCustomerRedisUrl(input2);
+  setCustomerRedisUrl(checked.normalized);
+  return { display: checked.display };
 }
 function clearCustomerRedisUrl() {
   delete process.env.REDIS_URL;
@@ -21735,6 +21785,915 @@ var init_customer_storage_config = __esm({
     init_redis_url();
     ENV_PATH = path18.resolve(".env");
     REDIS_KEYS = /* @__PURE__ */ new Set(["REDIS_URL", "REDIS_CLI_URL", "OMEGA_REDIS_URL"]);
+  }
+});
+
+// src/services/workers/outreach-worker.ts
+var outreach_worker_exports = {};
+__export(outreach_worker_exports, {
+  setOutreachBotRef: () => setOutreachBotRef,
+  startOutreachWorker: () => startOutreachWorker
+});
+import { Worker as Worker2 } from "bullmq";
+function setOutreachBotRef(bot) {
+  tgBot = bot;
+}
+async function updateProgress(chatId, msgId, text2) {
+  if (!tgBot || !chatId) return;
+  try {
+    if (msgId) {
+      await tgBot.telegram.editMessageText(chatId, msgId, null, text2, { parse_mode: "HTML" });
+    } else {
+      await tgBot.telegram.sendMessage(chatId, text2, { parse_mode: "HTML" });
+    }
+  } catch {
+  }
+}
+async function waitForSocket(sessionId, maxWaitMs = 9e4) {
+  const deadline = Date.now() + maxWaitMs;
+  while (Date.now() < deadline) {
+    const socket = getSocket(sessionId);
+    if (socket) return socket;
+    await sleep(3e3);
+  }
+  return null;
+}
+async function sendWhatsAppTerminal(socket, jid, result, kind) {
+  if (!socket || !jid) return;
+  const sent = result.sent ?? result.success;
+  const title2 = result.lifecycle === "CANCELLED" ? `${kind} CANCELLED` : sent > 0 && result.failed === 0 ? `${kind} COMPLETE` : sent > 0 ? `${kind} PARTIAL` : `${kind} FAILED`;
+  const body = result.lifecycle === "CANCELLED" ? asciiBox({ title: title2, emoji: "\u{1F6D1}", rows: [["Sent", String(sent)], ["Failed", String(result.failed)], ["Skipped", String(result.skipped)]], footer: result.lastError ?? "StopSpam cancelled this session job." }) : sent <= 0 ? errorCard(`${kind} FAILED`, `No message was accepted. Failed: ${result.failed}; skipped: ${result.skipped}.`) : asciiBox({
+    title: title2,
+    emoji: title2.endsWith("COMPLETE") ? "\u2705" : "\u26A0\uFE0F",
+    rows: [["Sent", String(sent)], ["Failed", String(result.failed)], ["Skipped", String(result.skipped)]],
+    footer: "Durable worker finished this session job."
+  });
+  await socket.sendMessage(jid, { text: body }).catch(() => {
+  });
+}
+async function processOutreach(job) {
+  const { telegramId, workspaceId, sessionId, generation, type, data, chatId, messageId, waChatJid } = job.data;
+  const controlOwner = workspaceId ?? telegramId;
+  if (!await isBroadcastGenerationCurrent(controlOwner, sessionId, generation)) {
+    const cancelled = {
+      success: 0,
+      failed: 0,
+      skipped: 0,
+      rateLimited: 0,
+      details: ["CANCELLED: job generation is stale"],
+      duration: 0,
+      lifecycle: "CANCELLED",
+      remaining: 0,
+      sent: 0,
+      attempted: 0,
+      lastError: "STOPSPAM_GENERATION_INVALID"
+    };
+    const currentSocket = getSocket(sessionId);
+    await sendWhatsAppTerminal(currentSocket, waChatJid, cancelled, type === "allchat" ? "ALLCHAT" : "ALLSTATUS");
+    return cancelled;
+  }
+  const socket = await waitForSocket(sessionId);
+  if (!socket) {
+    logger.warn(`[OutreachWorker] No socket for ${sessionId} after wait \u2014 requeueing`);
+    throw new Error(`Session ${sessionId} not available \u2014 will retry`);
+  }
+  const onProgress = async (msg) => {
+    await job.updateProgress(msg);
+    await updateProgress(chatId, messageId, msg);
+  };
+  const text2 = data.text ?? "";
+  let result;
+  switch (type) {
+    case "allstatus":
+      result = await cmdAllStatus(socket, sessionId, telegramId, text2, {
+        mediaBuffer: data.mediaBuffer ? Buffer.from(data.mediaBuffer, "base64") : void 0,
+        mediaType: data.mediaType,
+        onProgress,
+        isCancelled: () => isBroadcastGenerationCurrent(controlOwner, sessionId, generation).then((current) => !current)
+      });
+      break;
+    case "allchat":
+      result = await cmdAllChat(socket, sessionId, telegramId, text2, {
+        mediaBuffer: data.mediaBuffer ? Buffer.from(data.mediaBuffer, "base64") : void 0,
+        mediaType: data.mediaType,
+        onProgress,
+        isCancelled: () => isBroadcastGenerationCurrent(controlOwner, sessionId, generation).then((current) => !current)
+      });
+      break;
+    case "tochatx": {
+      const target = data.target;
+      const count = data.count ?? 1;
+      const toChatResult = await cmdToChatX(socket, telegramId, sessionId, target, count, text2);
+      await onProgress(`\u2705 Sent ${toChatResult.sent}/${count} to ${target}`);
+      result = { success: toChatResult.sent, failed: toChatResult.failed, skipped: 0, rateLimited: 0, details: [], duration: 0 };
+      break;
+    }
+    default:
+      result = { success: 0, failed: 0, skipped: 0, rateLimited: 0, details: [`Unknown type: ${type}`], duration: 0 };
+      break;
+  }
+  if (type === "allchat" || type === "allstatus") {
+    await sendWhatsAppTerminal(socket, waChatJid, result, type === "allchat" ? "ALLCHAT" : "ALLSTATUS");
+  }
+  return result;
+}
+function createOutreachWorker() {
+  const worker = new Worker2(
+    QUEUE_NAMES.OUTREACH,
+    processOutreach,
+    {
+      connection: getRedis(),
+      concurrency: 1,
+      limiter: { max: 5, duration: 6e4 },
+      stalledInterval: 3e4,
+      // check for stalled jobs every 30s
+      maxStalledCount: 3
+      // retry stalled jobs up to 3 times before failing
+    }
+  );
+  registerWorker(worker);
+  logger.info("[OutreachWorker] Started");
+  return worker;
+}
+function startOutreachWorker() {
+  if (!outreachFactoryRegistered) {
+    registerWorkerFactory(createOutreachWorker);
+    outreachFactoryRegistered = true;
+  }
+  return createOutreachWorker();
+}
+var tgBot, outreachFactoryRegistered;
+var init_outreach_worker = __esm({
+  "src/services/workers/outreach-worker.ts"() {
+    "use strict";
+    init_queue();
+    init_socket_manager();
+    init_all_status();
+    init_mass_outreach();
+    init_status();
+    init_logger();
+    init_delay();
+    init_ascii_art();
+    init_broadcast_control();
+    tgBot = null;
+    outreachFactoryRegistered = false;
+  }
+});
+
+// src/services/workers/lifecycle-worker.ts
+var lifecycle_worker_exports = {};
+__export(lifecycle_worker_exports, {
+  setLifecycleBotRef: () => setLifecycleBotRef,
+  startLifecycleWorker: () => startLifecycleWorker
+});
+import { Worker as Worker3 } from "bullmq";
+function setLifecycleBotRef(bot) {
+  tgBot2 = bot;
+}
+async function waitForSocket2(sessionId, maxWaitMs = 9e4) {
+  const deadline = Date.now() + maxWaitMs;
+  while (Date.now() < deadline) {
+    const socket = getSocket(sessionId);
+    if (socket) return socket;
+    await sleep(3e3);
+  }
+  return null;
+}
+async function processLifecycle(job) {
+  const { telegramId, sessionId, type, chatId } = job.data;
+  const socket = await waitForSocket2(sessionId);
+  if (!socket) {
+    throw new Error(`Session ${sessionId} not available \u2014 will retry`);
+  }
+  const onProgress = async (msg) => {
+    await job.updateProgress(msg);
+    if (tgBot2 && chatId) {
+      try {
+        await tgBot2.telegram.sendMessage(chatId, msg, { parse_mode: "HTML" });
+      } catch {
+      }
+    }
+  };
+  switch (type) {
+    case "joinall": {
+      const links = loadBucket(telegramId, "active").map((e) => e.link);
+      return cmdJoinAll(socket, sessionId, telegramId, links, { onProgress });
+    }
+    case "leaveall": {
+      return cmdLeaveAll(socket, sessionId, telegramId, { onProgress });
+    }
+    default:
+      return { success: 0, failed: 0, skipped: 0, rateLimited: 0, details: [`Unknown: ${type}`], duration: 0 };
+  }
+}
+function createLifecycleWorker() {
+  const worker = new Worker3(
+    QUEUE_NAMES.LIFECYCLE,
+    processLifecycle,
+    {
+      connection: getRedis(),
+      concurrency: 1,
+      limiter: { max: 3, duration: 6e4 },
+      stalledInterval: 3e4,
+      maxStalledCount: 3
+    }
+  );
+  registerWorker(worker);
+  logger.info("[LifecycleWorker] Started");
+  return worker;
+}
+function startLifecycleWorker() {
+  if (!lifecycleFactoryRegistered) {
+    registerWorkerFactory(createLifecycleWorker);
+    lifecycleFactoryRegistered = true;
+  }
+  return createLifecycleWorker();
+}
+var tgBot2, lifecycleFactoryRegistered;
+var init_lifecycle_worker = __esm({
+  "src/services/workers/lifecycle-worker.ts"() {
+    "use strict";
+    init_queue();
+    init_socket_manager();
+    init_lifecycle();
+    init_workspace();
+    init_logger();
+    init_delay();
+    tgBot2 = null;
+    lifecycleFactoryRegistered = false;
+  }
+});
+
+// src/services/workers/omni-worker.ts
+var omni_worker_exports = {};
+__export(omni_worker_exports, {
+  startOmniWorker: () => startOmniWorker
+});
+import { Worker as Worker4 } from "bullmq";
+async function processOmni(job) {
+  const { data } = job.data;
+  const command = data.command;
+  const text2 = data.text ?? "";
+  const start = Date.now();
+  const result = {
+    success: 0,
+    failed: 0,
+    skipped: 0,
+    rateLimited: 0,
+    details: [],
+    duration: 0
+  };
+  const sockets = getAllSockets();
+  for (const [sessionId, handle] of sockets.entries()) {
+    if (handle.frozen) {
+      result.skipped++;
+      continue;
+    }
+    try {
+      switch (command) {
+        case "broadcast": {
+          const groups = await handle.socket.groupFetchAllParticipating();
+          const jids = Object.values(groups).slice(0, 5).map((g) => g.id);
+          const { success: success2, failed } = await PreviewDispatcher.broadcast(
+            handle.socket,
+            jids,
+            text2
+          );
+          result.success += success2;
+          result.failed += failed;
+          break;
+        }
+        case "status": {
+          const { success: success2 } = await PreviewDispatcher.send(
+            handle.socket,
+            "status@broadcast",
+            text2
+          );
+          if (success2) result.success++;
+          else result.failed++;
+          break;
+        }
+        default:
+          result.skipped++;
+      }
+      result.details.push(`\u2705 ${sessionId}`);
+    } catch (err) {
+      result.failed++;
+      result.details.push(`\u274C ${sessionId}: ${String(err).slice(0, 40)}`);
+    }
+    await jitter(500, 1e3);
+  }
+  result.duration = Date.now() - start;
+  logger.info("[OmniWorker] Omni command complete", result);
+  return result;
+}
+function createOmniWorker() {
+  const worker = new Worker4(
+    QUEUE_NAMES.OMNI,
+    processOmni,
+    {
+      connection: getRedis(),
+      concurrency: 1,
+      limiter: { max: 2, duration: 6e4 }
+    }
+  );
+  registerWorker(worker);
+  logger.info("[OmniWorker] Started");
+  return worker;
+}
+function startOmniWorker() {
+  if (!omniFactoryRegistered) {
+    registerWorkerFactory(createOmniWorker);
+    omniFactoryRegistered = true;
+  }
+  return createOmniWorker();
+}
+var omniFactoryRegistered;
+var init_omni_worker = __esm({
+  "src/services/workers/omni-worker.ts"() {
+    "use strict";
+    init_queue();
+    init_socket_manager();
+    init_logger();
+    init_delay();
+    init_PreviewDispatcher();
+    omniFactoryRegistered = false;
+  }
+});
+
+// src/services/workers/allstatus-worker.ts
+var allstatus_worker_exports = {};
+__export(allstatus_worker_exports, {
+  setAllStatusBotRef: () => setAllStatusBotRef,
+  startAllStatusWorker: () => startAllStatusWorker
+});
+import { Worker as Worker5 } from "bullmq";
+function setAllStatusBotRef(bot) {
+  tgBot3 = bot;
+}
+async function sendWhatsAppTerminal2(socket, jid, result) {
+  if (!socket || !jid) return;
+  const sent = result.sent ?? result.success;
+  const title2 = result.lifecycle === "COMPLETED" ? "BROADCAST COMPLETE" : result.lifecycle === "CANCELLED" ? "BROADCAST CANCELLED" : sent > 0 ? "BROADCAST PARTIAL" : "BROADCAST FAILED";
+  const body = title2 === "BROADCAST FAILED" ? errorCard("BROADCAST FAILED", `No confirmed status was sent. Failed: ${result.failed}; skipped: ${result.skipped}.`) : asciiBox({
+    title: title2,
+    emoji: title2 === "BROADCAST COMPLETE" ? "\u2705" : title2 === "BROADCAST CANCELLED" ? "\u{1F6D1}" : "\u26A0\uFE0F",
+    rows: [
+      ["Groups", String(result.totalGroups ?? 0)],
+      ["Sent", String(sent)],
+      ["Failed", String(result.failed)],
+      ["Skipped", String(result.skipped)],
+      ["Remaining", String(result.remaining ?? 0)]
+    ],
+    footer: result.lastError ? result.lastError.slice(0, 120) : "Durable worker finished this session job."
+  });
+  await socket.sendMessage(jid, { text: body }).catch(() => {
+  });
+}
+async function waitForSessionSocket(sessionId, maxWaitMs = 9e4) {
+  const initialHealth = getSessionHealth(sessionId);
+  if (initialHealth && !["CONNECTED", "HEALTHY", "DEGRADED"].includes(initialHealth.state)) return null;
+  const deadline = Date.now() + maxWaitMs;
+  while (Date.now() < deadline) {
+    const socket = getSocket(sessionId);
+    if (socket) return socket;
+    await sleep(3e3);
+  }
+  return null;
+}
+async function withSessionBroadcastLock(sessionId, work) {
+  const previous = sessionBroadcastLocks.get(sessionId) ?? Promise.resolve();
+  let release;
+  const current = new Promise((resolve) => {
+    release = resolve;
+  });
+  sessionBroadcastLocks.set(sessionId, current);
+  await previous.catch(() => void 0);
+  try {
+    return await work();
+  } finally {
+    release();
+    if (sessionBroadcastLocks.get(sessionId) === current) sessionBroadcastLocks.delete(sessionId);
+  }
+}
+async function processAllStatus(job) {
+  const { telegramId, workspaceId, sessionId, generation, data, chatId, messageId, waChatJid } = job.data;
+  const controlOwner = workspaceId ?? telegramId;
+  if (!await isBroadcastGenerationCurrent(controlOwner, sessionId, generation)) {
+    return {
+      success: 0,
+      failed: 0,
+      skipped: 0,
+      rateLimited: 0,
+      details: ["CANCELLED: job generation is stale"],
+      duration: 0,
+      lifecycle: "CANCELLED",
+      remaining: 0,
+      sent: 0,
+      attempted: 0,
+      prepared: 0,
+      lastError: "STOPSPAM_GENERATION_INVALID"
+    };
+  }
+  const meta = loadSessionMeta(telegramId, sessionId);
+  if (!meta || meta.sessionId !== sessionId || meta.telegramId !== telegramId) {
+    throw new Error(`SESSION_CONTEXT_INVALID:${sessionId}`);
+  }
+  const socket = await waitForSessionSocket(sessionId);
+  if (!socket) {
+    const health = getSessionHealth(sessionId);
+    const lifecycle = meta.status === "LOGGED_OUT" || health?.state === "LOGGED_OUT" ? "LOGGED_OUT" : "WAITING_FOR_SESSION";
+    const now3 = Date.now();
+    await job.updateProgress({ sessionId, state: lifecycle, detail: "Session recovery is in progress; job will retry automatically.", at: now3 });
+    if (lifecycle === "WAITING_FOR_SESSION") {
+      throw new Error(`WAITING_FOR_SESSION:${sessionId}`);
+    }
+    return {
+      success: 0,
+      failed: 0,
+      skipped: 0,
+      rateLimited: 0,
+      details: [`${lifecycle}: session is unavailable`],
+      duration: 0,
+      totalGroups: 0,
+      prepared: 0,
+      attempted: 0,
+      sent: 0,
+      remaining: 0,
+      lifecycle,
+      lastError: lifecycle,
+      telemetry: [{ state: "QUEUED", at: now3 }, { state: lifecycle, at: now3 }]
+    };
+  }
+  const telegramIntervalMs = Math.max(1e3, Number.parseInt(process.env.ALLSTATUS_TELEGRAM_PROGRESS_MS ?? "2000", 10) || 2e3);
+  let lastTelegramAt = 0;
+  let pendingTelegramText = "";
+  let telegramTimer;
+  const flushTelegram = async () => {
+    if (!tgBot3 || !chatId || !messageId || !pendingTelegramText) return;
+    const text2 = pendingTelegramText;
+    pendingTelegramText = "";
+    lastTelegramAt = Date.now();
+    await tgBot3.telegram.editMessageText(chatId, messageId, null, text2, { parse_mode: "HTML" }).catch(() => {
+    });
+  };
+  const onProgress = async (text2) => {
+    const at = Date.now();
+    await job.updateProgress({ sessionId, state: "RUNNING", text: text2, at, lastProgressAt: at });
+    pendingTelegramText = text2;
+    if (tgBot3 && chatId && messageId && at - lastTelegramAt >= telegramIntervalMs) {
+      await flushTelegram();
+    } else if (!telegramTimer) {
+      telegramTimer = setTimeout(() => {
+        telegramTimer = void 0;
+        void flushTelegram();
+      }, telegramIntervalMs);
+      telegramTimer.unref?.();
+    }
+    logger.debug("[AllStatusWorker] progress", { jobId: job.id, sessionId, chatId, messageId, text: text2.slice(0, 120) });
+  };
+  const result = await withSessionBroadcastLock(sessionId, () => cmdAllStatus(socket, sessionId, telegramId, String(data.text ?? ""), {
+    mediaBuffer: data.mediaBuffer ? Buffer.from(data.mediaBuffer, "base64") : void 0,
+    mediaType: data.mediaType,
+    caption: data.caption,
+    mimeType: data.mimeType,
+    ptt: Boolean(data.ptt),
+    broadcastId: String(job.id ?? `allstatus-${sessionId}`),
+    durableIdempotency: true,
+    onProgress,
+    isCancelled: () => isBroadcastGenerationCurrent(controlOwner, sessionId, generation).then((current) => !current)
+  }));
+  if (telegramTimer) clearTimeout(telegramTimer);
+  await flushTelegram();
+  await sendWhatsAppTerminal2(socket, waChatJid, result);
+  return result;
+}
+function startWorker(queueName, label, concurrency) {
+  const worker = new Worker5(
+    queueName,
+    processAllStatus,
+    {
+      connection: getRedis(),
+      concurrency,
+      limiter: {
+        max: Math.max(4, Number.parseInt(process.env.ALLSTATUS_RATE_LIMIT_MAX ?? "30", 10) || 30),
+        duration: 6e4
+      },
+      lockDuration: Math.max(12e4, Number.parseInt(process.env.ALLSTATUS_LOCK_DURATION_MS ?? "1200000", 10) || 12e5),
+      lockRenewTime: Math.max(3e4, Number.parseInt(process.env.ALLSTATUS_LOCK_RENEW_MS ?? "300000", 10) || 3e5),
+      stalledInterval: 3e4,
+      maxStalledCount: 2
+    }
+  );
+  registerWorker(worker);
+  logger.info("[AllStatusWorker] Started", { queue: queueName, class: label, concurrency });
+  return worker;
+}
+function createAllStatusWorkers() {
+  const manualConcurrency = Math.max(1, Number.parseInt(process.env.ALLSTATUS_MANUAL_WORKERS ?? "2", 10) || 2);
+  const autoPromoteConcurrency = Math.max(1, Number.parseInt(process.env.ALLSTATUS_AUTOPROMOTE_WORKERS ?? "1", 10) || 1);
+  const legacyConcurrency = Math.max(1, Number.parseInt(process.env.ALLSTATUS_LEGACY_WORKERS ?? "1", 10) || 1);
+  return [
+    startWorker(QUEUE_NAMES.ALLSTATUS_MANUAL, "manual", manualConcurrency),
+    startWorker(QUEUE_NAMES.ALLSTATUS_AUTOPROMOTE, "autopromote", autoPromoteConcurrency),
+    startWorker(QUEUE_NAMES.ALLSTATUS, "legacy", legacyConcurrency)
+  ];
+}
+function startAllStatusWorker() {
+  if (!allStatusFactoryRegistered) {
+    registerWorkerFactory(createAllStatusWorkers);
+    allStatusFactoryRegistered = true;
+  }
+  return createAllStatusWorkers();
+}
+var tgBot3, sessionBroadcastLocks, allStatusFactoryRegistered;
+var init_allstatus_worker = __esm({
+  "src/services/workers/allstatus-worker.ts"() {
+    "use strict";
+    init_queue();
+    init_socket_manager();
+    init_all_status();
+    init_logger();
+    init_workspace();
+    init_ascii_art();
+    init_delay();
+    init_broadcast_control();
+    init_session_health();
+    tgBot3 = null;
+    sessionBroadcastLocks = /* @__PURE__ */ new Map();
+    allStatusFactoryRegistered = false;
+  }
+});
+
+// src/runtime/pterodactyl-client-bridge.ts
+var pterodactyl_client_bridge_exports = {};
+__export(pterodactyl_client_bridge_exports, {
+  setCustomerTelegramSender: () => setCustomerTelegramSender,
+  startPterodactylClientBridge: () => startPterodactylClientBridge,
+  stopPterodactylClientBridge: () => stopPterodactylClientBridge,
+  updateCustomerStorageLease: () => updateCustomerStorageLease
+});
+import {
+  ClientRuntime,
+  MonolithWorkloadAdapter
+} from "@omega/client/library";
+import crypto8 from "node:crypto";
+import fs20 from "node:fs";
+import path19 from "node:path";
+function scheduleCustomerRuntimeUpdate(release) {
+  if (process.env.OMEGA_CUSTOMER_RUNTIME !== "true" && process.env.OMEGA_RUNTIME_ROLE !== "customer") return;
+  if (process.env.OMEGA_AUTO_UPDATE === "false" || release.buildId === scheduledUpdateBuildId) return;
+  const currentVersion = process.env.OMEGA_RUNTIME_VERSION?.trim();
+  if (!currentVersion) {
+    logger.warn("[PterodactylAdapter] Runtime version is unknown; refusing automatic restart until the packaged version is detected");
+    return;
+  }
+  if (currentVersion === release.version) return;
+  scheduledUpdateBuildId = release.buildId;
+  logger.info("[PterodactylAdapter] Verified runtime update available; scheduling graceful panel restart", {
+    version: release.version,
+    buildId: release.buildId
+  });
+  updateRestartTimer = setTimeout(() => {
+    updateRestartTimer = void 0;
+    if (process.env.OMEGA_SHUTTING_DOWN === "true") return;
+    process.env.OMEGA_SHUTTING_DOWN = "true";
+    logger.info("[PterodactylAdapter] Handing restart to panel supervisor for runtime update", { version: release.version });
+    process.kill(process.pid, "SIGTERM");
+  }, Math.max(1e3, Number.parseInt(process.env.OMEGA_UPDATE_GRACE_MS ?? "5000", 10) || 5e3));
+  updateRestartTimer.unref?.();
+}
+function setCustomerTelegramSender(sender) {
+  customerTelegramSender = sender;
+}
+async function ensureCustomerQueueWorkersStarted() {
+  const queue = await Promise.resolve().then(() => (init_queue(), queue_exports));
+  if (queue.hasQueueWorkers()) return;
+  const [{ startOutreachWorker: startOutreachWorker2 }, { startLifecycleWorker: startLifecycleWorker2 }, { startOmniWorker: startOmniWorker2 }, { startAllStatusWorker: startAllStatusWorker2 }] = await Promise.all([
+    Promise.resolve().then(() => (init_outreach_worker(), outreach_worker_exports)),
+    Promise.resolve().then(() => (init_lifecycle_worker(), lifecycle_worker_exports)),
+    Promise.resolve().then(() => (init_omni_worker(), omni_worker_exports)),
+    Promise.resolve().then(() => (init_allstatus_worker(), allstatus_worker_exports))
+  ]);
+  queue.startQueueMaintenance();
+  startOutreachWorker2();
+  startLifecycleWorker2();
+  startOmniWorker2();
+  startAllStatusWorker2();
+  logger.info("[PterodactylAdapter] Queue workers hot-started after Redis became available");
+}
+async function updateCustomerStorageLease(update) {
+  const current = runtime?.getStorageLease() ?? getActiveStorageLease() ?? {
+    deploymentId: process.env.OMEGA_DEPLOYMENT_ID?.trim() ?? "",
+    workspaceId: process.env.OMEGA_WORKSPACE_ID?.trim() ?? "",
+    mode: "CUSTOMER",
+    revision: 1,
+    issuedAt: (/* @__PURE__ */ new Date(0)).toISOString()
+  };
+  const lease = {
+    ...current,
+    mode: "CUSTOMER",
+    revision: current.revision + 1,
+    issuedAt: (/* @__PURE__ */ new Date()).toISOString(),
+    ...update.redisUrl === null ? { redisUrl: void 0 } : update.redisUrl === void 0 ? {} : { redisUrl: update.redisUrl },
+    ...update.mongoUri === null ? { mongoUri: void 0 } : update.mongoUri === void 0 ? {} : { mongoUri: update.mongoUri }
+  };
+  if (runtime) {
+    try {
+      const updated = await runtime.updateStorageLease({ mode: "CUSTOMER", ...update });
+      if (updated.redisUrl) await ensureCustomerQueueWorkersStarted();
+      return updated;
+    } catch (error2) {
+      logger.warn("[PterodactylAdapter] Core storage update unavailable; applying local customer storage fallback", { error: String(error2) });
+    }
+  }
+  if (!lease.deploymentId || !lease.workspaceId) throw new Error("Customer storage identity is not ready.");
+  if (!configuredRedisUrl() && !process.env.REDIS_HOST?.trim() && !process.env.OMEGA_ALLOW_LOCAL_REDIS?.trim()) {
+    await disableQueueStorage(lease);
+  } else {
+    await rebindStorage(lease, lease.deploymentId, lease.workspaceId);
+    if (lease.redisUrl) await ensureCustomerQueueWorkersStarted();
+  }
+  return lease;
+}
+function iso(value, fallback = (/* @__PURE__ */ new Date()).toISOString()) {
+  if (typeof value === "number" && Number.isFinite(value)) return new Date(value).toISOString();
+  if (typeof value === "string" && !Number.isNaN(Date.parse(value))) return new Date(value).toISOString();
+  return fallback;
+}
+function sourceFor(workspaceId, deploymentId) {
+  const knownJobStatuses = /* @__PURE__ */ new Map();
+  const pendingJobEvents = [];
+  const completedControls = /* @__PURE__ */ new Map();
+  const queueJobTransition = (job) => {
+    const previous = knownJobStatuses.get(job.jobId);
+    const next = job.status.toUpperCase();
+    knownJobStatuses.set(job.jobId, next);
+    let kind;
+    if (!previous) kind = "JOB_CREATED";
+    else if (previous === next) return;
+    else if (["STARTING", "PROCESSING", "RUNNING"].includes(next)) kind = "JOB_STARTED";
+    else if (["COMPLETED"].includes(next)) kind = "JOB_COMPLETED";
+    else if (["FAILED"].includes(next)) kind = "JOB_FAILED";
+    else if (["STOPPED", "CANCELLED"].includes(next)) kind = "JOB_CANCELLED";
+    else if (["RATE_LIMITED", "SESSION_UNAVAILABLE", "RECONNECTING"].includes(next)) kind = "JOB_RECOVERING";
+    else kind = "JOB_PROGRESS";
+    if (pendingJobEvents.length >= 100) pendingJobEvents.shift();
+    pendingJobEvents.push({
+      kind,
+      deploymentId: job.deploymentId,
+      workspaceId: job.workspaceId,
+      jobId: job.jobId,
+      type: job.type,
+      ...job.sessionId ? { sessionId: job.sessionId } : {},
+      ...job.generation === void 0 ? {} : { generation: job.generation },
+      owner: job.owner,
+      at: (/* @__PURE__ */ new Date()).toISOString(),
+      ...job.progress ? { progress: job.progress } : {},
+      ...job.errorCode || job.errorMessage ? { error: { code: job.errorCode ?? "LOCAL_JOB_FAILED", message: (job.errorMessage ?? "Local job failed.").slice(0, 240) } } : {}
+    });
+  };
+  return {
+    listSessions() {
+      return loadAllSessionsGlobally().map(({ meta }) => {
+        const health = getSessionHealth(meta.sessionId);
+        const healthState = health?.state;
+        const socketReady = Boolean(getSocket(meta.sessionId));
+        const status = healthState === "RECONNECTING" ? "RECONNECTING" : healthState === "DEGRADED" || healthState === "UNHEALTHY" ? "DEGRADED" : meta.status === "ACTIVE" && !socketReady ? "CONNECTING" : meta.status;
+        return {
+          sessionId: meta.sessionId,
+          workspaceId,
+          status,
+          generation: getSocketGeneration(meta.sessionId),
+          ...socketReady && (healthState === "CONNECTED" || healthState === "HEALTHY") ? { connectedAt: iso(health?.lastConnectionEventAt, iso(meta.pairedAt)) } : {},
+          ...health?.lastError ? { lastErrorCode: "SESSION_TRANSPORT_ERROR" } : {}
+        };
+      });
+    },
+    listJobs() {
+      const jobs = [];
+      for (const { telegramId, meta } of loadAllSessionsGlobally()) {
+        const joinJob = getJoinManagerJob(telegramId, meta.sessionId);
+        if (joinJob && typeof joinJob.id === "string") {
+          jobs.push({
+            deploymentId,
+            workspaceId,
+            sessionId: meta.sessionId,
+            jobId: joinJob.id,
+            type: "join-manager",
+            status: typeof joinJob.status === "string" ? joinJob.status : "FAILED",
+            generation: getSocketGeneration(meta.sessionId),
+            owner: workspaceId,
+            ...joinJob.startedAt ? { startedAt: iso(joinJob.startedAt) } : {},
+            updatedAt: iso(joinJob.updatedAt ?? joinJob.createdAt),
+            ...typeof joinJob.lastError === "string" ? { errorCode: "JOIN_MANAGER_ERROR", errorMessage: joinJob.lastError } : {}
+          });
+        }
+        for (const run of getAllStatusRunSnapshot(meta.sessionId)) {
+          jobs.push({
+            deploymentId,
+            workspaceId,
+            sessionId: meta.sessionId,
+            jobId: `allstatus:${run.broadcastId}`,
+            type: "allstatus",
+            status: run.cancelled ? "CANCELLED" : "RUNNING",
+            generation: getSocketGeneration(meta.sessionId),
+            owner: workspaceId,
+            startedAt: iso(run.startedAt),
+            updatedAt: (/* @__PURE__ */ new Date()).toISOString()
+          });
+        }
+      }
+      for (const job of jobs) queueJobTransition(job);
+      return jobs;
+    },
+    drainJobEvents() {
+      return pendingJobEvents.splice(0, 50);
+    },
+    async executeControl(request) {
+      const prior = completedControls.get(request.requestId) ?? completedControls.get(request.jobId);
+      if (prior) return { ...prior, status: "DUPLICATE", at: (/* @__PURE__ */ new Date()).toISOString() };
+      const base = { requestId: request.requestId, jobId: request.jobId, deploymentId: request.deploymentId, workspaceId: request.workspaceId };
+      if (request.deploymentId !== deploymentId || request.workspaceId !== workspaceId) {
+        return { ...base, status: "REJECTED", at: (/* @__PURE__ */ new Date()).toISOString(), error: { code: "CONTROL_OWNERSHIP_MISMATCH", message: "Control request is outside the active installation scope." } };
+      }
+      if (request.sessionId && request.generation !== void 0 && request.generation !== getSocketGeneration(request.sessionId)) {
+        return { ...base, status: "REJECTED", at: (/* @__PURE__ */ new Date()).toISOString(), error: { code: "STALE_SESSION_GENERATION", message: "The requested session generation is no longer current." } };
+      }
+      let result;
+      try {
+        if (request.action === "POLICY_SYNC") {
+          const policy = request.payload?.policy ?? {};
+          const patch = {
+            ...typeof policy.statusDesignEnabled === "boolean" ? { statusDesignEnabled: policy.statusDesignEnabled } : {},
+            ...typeof policy.statusDesignTheme === "string" && policy.statusDesignTheme.trim() ? { statusDesignTheme: policy.statusDesignTheme.trim().slice(0, 80) } : {}
+          };
+          if (Object.keys(patch).length === 0) throw new Error("Parent policy payload is empty.");
+          let applied = 0;
+          for (const { telegramId, meta } of loadAllSessionsGlobally()) {
+            updateSessionConfig(telegramId, meta.sessionId, patch);
+            applied += 1;
+          }
+          result = { ...base, status: "COMPLETED", at: (/* @__PURE__ */ new Date()).toISOString(), result: { jobId: request.jobId, state: "SYNCED", message: `Parent policy applied to ${applied} local session${applied === 1 ? "" : "s"}.` } };
+        } else if (request.action === "FORCE_JOIN_SET" || request.action === "FORCE_JOIN_CLEAR") {
+          const policy = request.action === "FORCE_JOIN_CLEAR" ? void 0 : request.payload?.forceJoin;
+          const targets = policy?.enabled ? [...new Set([policy.channel, policy.groupId].filter((value) => Boolean(value && value.trim())))] : [];
+          const customerRuntime = process.env.OMEGA_CUSTOMER_RUNTIME === "true" || process.env.OMEGA_RUNTIME_ROLE === "customer";
+          const ownerScope = process.env.TELEGRAM_OWNER_ID?.trim() || (customerRuntime ? "" : "8831887192");
+          if (ownerScope) updateConfig(ownerScope, { forceJoinTargets: targets });
+          result = { ...base, status: "COMPLETED", at: (/* @__PURE__ */ new Date()).toISOString(), result: { jobId: request.jobId, state: policy?.enabled ? "ENABLED" : "DISABLED", message: `Force Join ${policy?.enabled ? "policy applied" : "policy cleared"} locally.` } };
+        } else if (request.action === "BROADCAST_DISPATCH") {
+          const broadcast = request.payload?.broadcast;
+          if (!broadcast?.text?.trim()) throw new Error("Broadcast text is empty.");
+          if (!customerTelegramSender) throw new Error("Customer Telegram delivery is unavailable.");
+          const ownerId = Number(process.env.TELEGRAM_OWNER_ID?.trim() || "");
+          const recipientIds = broadcast.target === "owner" ? Number.isSafeInteger(ownerId) && ownerId > 0 ? [ownerId] : [] : getAllUserIds().map((id) => Number(id)).filter((id) => Number.isSafeInteger(id) && id > 0);
+          if (recipientIds.length === 0) throw new Error(broadcast.target === "owner" ? "Customer Telegram owner is not configured." : "No registered Telegram users are available.");
+          const deliveries = await Promise.allSettled(recipientIds.map((chatId) => customerTelegramSender(chatId, broadcast.text.slice(0, 3800), broadcast.parseMode ?? "HTML")));
+          const delivered = deliveries.filter((delivery) => delivery.status === "fulfilled").length;
+          if (delivered === 0) throw new Error("Customer Telegram delivery failed for every recipient.");
+          result = { ...base, status: "COMPLETED", at: (/* @__PURE__ */ new Date()).toISOString(), result: { jobId: request.jobId, state: "DELIVERED", message: `Parent broadcast delivered to ${delivered}/${recipientIds.length} Telegram user${recipientIds.length === 1 ? "" : "s"}.` } };
+        } else {
+          if (!request.sessionId) throw new Error("A session is required for this control action.");
+          if (request.action === "JOIN_START" && !getSocket(request.sessionId)) throw new Error("The requested session is not operational.");
+          if (request.action === "JOIN_START") {
+            const job = startJoinJob(workspaceId, request.sessionId, request.payload ?? {});
+            result = { ...base, status: "ACCEPTED", at: (/* @__PURE__ */ new Date()).toISOString(), result: { jobId: job.id, state: job.status, message: "Join Manager started locally." } };
+          } else if (request.action === "JOIN_PAUSE") {
+            const job = pauseJoinJob(workspaceId, request.sessionId);
+            result = { ...base, status: job ? "ACCEPTED" : "REJECTED", at: (/* @__PURE__ */ new Date()).toISOString(), result: job ? { jobId: job.id, state: job.status, message: "Join Manager pause requested locally." } : void 0, ...job ? {} : { error: { code: "JOIN_JOB_NOT_FOUND", message: "No Join Manager job exists for this session." } } };
+          } else if (request.action === "JOIN_STOP") {
+            const job = stopJoinJob(workspaceId, request.sessionId);
+            result = { ...base, status: job ? "ACCEPTED" : "REJECTED", at: (/* @__PURE__ */ new Date()).toISOString(), result: job ? { jobId: job.id, state: job.status, message: "Join Manager stop requested locally." } : void 0, ...job ? {} : { error: { code: "JOIN_JOB_NOT_FOUND", message: "No Join Manager job exists for this session." } } };
+          } else if (request.action === "ALLSTATUS_STOP") {
+            stopAllStatus(request.sessionId);
+            result = { ...base, status: "ACCEPTED", at: (/* @__PURE__ */ new Date()).toISOString(), result: { jobId: request.jobId, state: "STOPPING", message: "AllStatus stop requested locally." } };
+          } else {
+            result = { ...base, status: "REJECTED", at: (/* @__PURE__ */ new Date()).toISOString(), error: { code: "CONTROL_ACTION_UNSUPPORTED", message: "Control action is not supported." } };
+          }
+        }
+      } catch (error2) {
+        result = { ...base, status: "FAILED", at: (/* @__PURE__ */ new Date()).toISOString(), error: { code: "LOCAL_CONTROL_FAILED", message: String(error2).slice(0, 240) } };
+      }
+      if (completedControls.size >= 200) completedControls.delete(completedControls.keys().next().value);
+      completedControls.set(request.requestId, result);
+      completedControls.set(request.jobId, result);
+      return result;
+    },
+    forceJoinPolicy() {
+      const customerRuntime = process.env.OMEGA_CUSTOMER_RUNTIME === "true" || process.env.OMEGA_RUNTIME_ROLE === "customer";
+      const ownerScope = process.env.TELEGRAM_OWNER_ID?.trim() || (customerRuntime ? "" : "8831887192");
+      const targets = ownerScope ? loadConfig(ownerScope).forceJoinTargets ?? [] : [];
+      return {
+        enabled: targets.length > 0,
+        ...targets[0] ? { channel: targets[0] } : {},
+        mode: "both",
+        checkedAt: (/* @__PURE__ */ new Date()).toISOString()
+      };
+    },
+    hasCapability(feature) {
+      if (feature === "whatsapp") return loadAllSessionsGlobally().some(({ meta }) => Boolean(getSocket(meta.sessionId)));
+      if (feature === "telegram") return Boolean(process.env.TELEGRAM_BOT_TOKEN);
+      return process.env[`OMEGA_DISABLE_${feature.toUpperCase()}`] !== "true";
+    },
+    // The monolith already owns startup/shutdown. These are deliberately no-op
+    // hooks so attaching the adapter never creates duplicate workers or sockets.
+    async start() {
+    },
+    async stop() {
+    },
+    async applyStorageLease(lease) {
+      const hasRedis = Boolean(lease.redisUrl || configuredRedisUrl() || process.env.REDIS_HOST?.trim() || process.env.OMEGA_ALLOW_LOCAL_REDIS?.trim());
+      if (lease.mode === "CUSTOMER" && !hasRedis) {
+        await disableQueueStorage(lease);
+        return;
+      }
+      await rebindStorage(lease, deploymentId, workspaceId);
+    }
+  };
+}
+function installationFilePath2() {
+  const workspaceRoot = path19.resolve(process.env.OMEGA_WORKSPACE_ROOT?.trim() || path19.join(process.cwd(), "workspace"));
+  return path19.resolve(process.env.OMEGA_INSTALLATION_FILE?.trim() || path19.join(workspaceRoot, "installation.json"));
+}
+function loadOrCreateInstallationIdentity() {
+  const filePath = installationFilePath2();
+  const agentVersion = process.env.OMEGA_AGENT_VERSION?.trim() || "1.2.0";
+  const persist = (identity) => {
+    fs20.mkdirSync(path19.dirname(filePath), { recursive: true, mode: 448 });
+    const temporary = `${filePath}.${process.pid}.tmp`;
+    fs20.writeFileSync(temporary, `${JSON.stringify(identity, null, 2)}\\n`, { mode: 384 });
+    fs20.renameSync(temporary, filePath);
+    return identity;
+  };
+  try {
+    const value = JSON.parse(fs20.readFileSync(filePath, "utf8"));
+    if (value.clientId && value.deploymentId && value.workspaceId) {
+      const identity = value;
+      if (identity.agentVersion !== agentVersion) return persist({ ...identity, agentVersion });
+      return identity;
+    }
+  } catch {
+  }
+  return persist({
+    clientId: process.env.OMEGA_CLIENT_ID?.trim() || crypto8.randomUUID(),
+    deploymentId: process.env.OMEGA_DEPLOYMENT_ID?.trim() || crypto8.randomUUID(),
+    workspaceId: process.env.OMEGA_WORKSPACE_ID?.trim() || crypto8.randomUUID(),
+    licenseId: "PENDING_CORE_REGISTRATION",
+    protocolVersion: 1,
+    agentVersion,
+    createdAt: (/* @__PURE__ */ new Date()).toISOString(),
+    status: "OFFLINE"
+  });
+}
+async function startPterodactylClientBridge() {
+  if (runtime) return;
+  const adapterSetting = process.env.OMEGA_CLIENT_ADAPTER?.trim().toLowerCase();
+  const apiUrl = process.env.OMEGA_API_URL?.trim() || process.env.OMEGA_CORE_URL?.trim();
+  if (!apiUrl && adapterSetting !== "true") return;
+  if (adapterSetting === "false") return;
+  if (apiUrl && !process.env.OMEGA_API_URL) process.env.OMEGA_API_URL = apiUrl;
+  process.env.OMEGA_CLIENT_ADAPTER = "true";
+  try {
+    const identity = loadOrCreateInstallationIdentity();
+    process.env.OMEGA_CLIENT_ID ||= identity.clientId;
+    process.env.OMEGA_WORKSPACE_ID ||= identity.workspaceId;
+    process.env.OMEGA_DEPLOYMENT_ID ||= identity.deploymentId;
+    const workspaceId = process.env.OMEGA_WORKSPACE_ID.trim();
+    const deploymentId = process.env.OMEGA_DEPLOYMENT_ID.trim();
+    const adapter = new MonolithWorkloadAdapter(workspaceId, deploymentId, sourceFor(workspaceId, deploymentId));
+    runtime = new ClientRuntime({ workload: adapter, onUpdateAvailable: scheduleCustomerRuntimeUpdate });
+    await runtime.start();
+    logger.info("[PterodactylAdapter] Core enrollment and local workload sync started", { workspaceId, deploymentId });
+  } catch (error2) {
+    runtime = void 0;
+    logger.error("[PterodactylAdapter] Core sync unavailable; local bot remains authoritative", { error: String(error2) });
+  }
+}
+async function stopPterodactylClientBridge() {
+  if (updateRestartTimer) clearTimeout(updateRestartTimer);
+  updateRestartTimer = void 0;
+  const current = runtime;
+  runtime = void 0;
+  if (!current) return;
+  try {
+    await current.stop();
+  } catch (error2) {
+    logger.warn("[PterodactylAdapter] Stop failed", { error: String(error2) });
+  }
+}
+var runtime, customerTelegramSender, scheduledUpdateBuildId, updateRestartTimer;
+var init_pterodactyl_client_bridge = __esm({
+  "src/runtime/pterodactyl-client-bridge.ts"() {
+    "use strict";
+    init_all_status();
+    init_socket_manager();
+    init_session_health();
+    init_workspace();
+    init_join_manager();
+    init_logger();
+    init_queue();
+    init_redis_url();
   }
 });
 
@@ -22230,9 +23189,12 @@ function createBot() {
         return;
       }
       try {
-        const { validateAndSetCustomerRedisUrl: validateAndSetCustomerRedisUrl2 } = await Promise.resolve().then(() => (init_customer_storage_config(), customer_storage_config_exports));
-        const saved = await validateAndSetCustomerRedisUrl2(text2.trim());
-        await ctx.reply(noticeCard("Redis Saved", `Redis allocation verified and saved as ${saved.display}. Queue workers will use it after the next graceful restart.`, "success"), { parse_mode: "HTML", reply_markup: backKeyboard("settings:redis") });
+        const { validateCustomerRedisUrl: validateCustomerRedisUrl2, setCustomerRedisUrl: setCustomerRedisUrl2 } = await Promise.resolve().then(() => (init_customer_storage_config(), customer_storage_config_exports));
+        const checked = await validateCustomerRedisUrl2(text2.trim());
+        const { updateCustomerStorageLease: updateCustomerStorageLease2 } = await Promise.resolve().then(() => (init_pterodactyl_client_bridge(), pterodactyl_client_bridge_exports));
+        await updateCustomerStorageLease2({ redisUrl: checked.normalized });
+        setCustomerRedisUrl2(checked.normalized);
+        await ctx.reply(noticeCard("Redis Active", `Redis allocation verified and hot-applied as ${checked.display}. Queue workers are using it now; no restart is required.`, "success"), { parse_mode: "HTML", reply_markup: backKeyboard("settings:redis") });
       } catch (error2) {
         await ctx.reply(noticeCard("Redis Not Saved", `The allocation was rejected: ${String(error2).slice(0, 220)}. Nothing was changed.`, "error"), { parse_mode: "HTML", reply_markup: backKeyboard("settings:redis") });
       }
@@ -25801,9 +26763,11 @@ Reply directly to a WhatsApp sticker with ${H.code(`${macroConfig.prefix || ""}s
     if (sub === "redis" && params[1] === "clear") {
       const { clearCustomerRedisUrl: clearCustomerRedisUrl2 } = await Promise.resolve().then(() => (init_customer_storage_config(), customer_storage_config_exports));
       clearCustomerRedisUrl2();
+      const { updateCustomerStorageLease: updateCustomerStorageLease2 } = await Promise.resolve().then(() => (init_pterodactyl_client_bridge(), pterodactyl_client_bridge_exports));
+      await updateCustomerStorageLease2({ redisUrl: null });
       await ctx.answerCbQuery("Redis cleared; ordinary commands remain available.").catch(() => {
       });
-      await ctx.editMessageText(noticeCard("Redis Cleared", "The customer runtime will continue in optional local mode. Restart only when you want queue workers to reconnect.", "success"), { parse_mode: "HTML", reply_markup: backKeyboard("settings:menu") });
+      await ctx.editMessageText(noticeCard("Redis Cleared", "Redis queue workers were stopped immediately. Ordinary WhatsApp and Telegram commands remain available; add Redis again whenever you are ready.", "success"), { parse_mode: "HTML", reply_markup: backKeyboard("settings:menu") });
       return;
     }
     if (sub === "globalsudo" && (params[1] === "add" || params[1] === "rm")) {
@@ -25956,7 +26920,7 @@ var init_bot = __esm({
 });
 
 // src/services/menu-canvas.ts
-import fs20 from "node:fs";
+import fs21 from "node:fs";
 import sharp from "sharp";
 function escapeXml(value) {
   return String(value ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&apos;");
@@ -26146,10 +27110,10 @@ async function generateMenuCanvas(options) {
 }
 async function resolveMenuMedia(options) {
   const configured2 = options.meta?.menuMedia;
-  if (configured2?.filePath && fs20.existsSync(configured2.filePath)) {
+  if (configured2?.filePath && fs21.existsSync(configured2.filePath)) {
     try {
       return {
-        buffer: fs20.readFileSync(configured2.filePath),
+        buffer: fs21.readFileSync(configured2.filePath),
         type: configured2.type,
         mimetype: configured2.mimeType,
         caption: options.caption
@@ -26304,23 +27268,23 @@ var init_private_mode_guard = __esm({
 });
 
 // src/services/a2v-store.ts
-import fs21 from "node:fs";
+import fs22 from "node:fs";
 import fsp4 from "node:fs/promises";
-import path19 from "node:path";
+import path20 from "node:path";
 function storeDir(telegramId, sessionId) {
-  return path19.join(sessionDir(telegramId, sessionId), "a2v");
+  return path20.join(sessionDir(telegramId, sessionId), "a2v");
 }
 function recordPath(telegramId, sessionId) {
-  return path19.join(storeDir(telegramId, sessionId), "record.json");
+  return path20.join(storeDir(telegramId, sessionId), "record.json");
 }
 function componentPath(telegramId, sessionId, kind) {
-  return path19.join(storeDir(telegramId, sessionId), kind === "video" ? "video.mp4" : "audio.source");
+  return path20.join(storeDir(telegramId, sessionId), kind === "video" ? "video.mp4" : "audio.source");
 }
 async function loadA2V(telegramId, sessionId) {
   try {
     const raw = JSON.parse(await fsp4.readFile(recordPath(telegramId, sessionId), "utf8"));
-    const validVideo = Boolean(raw.videoPath && fs21.existsSync(raw.videoPath));
-    const validAudio = Boolean(raw.audioPath && fs21.existsSync(raw.audioPath));
+    const validVideo = Boolean(raw.videoPath && fs22.existsSync(raw.videoPath));
+    const validAudio = Boolean(raw.audioPath && fs22.existsSync(raw.audioPath));
     if (raw.expiresAt <= Date.now() || !validVideo && !validAudio) {
       await clearA2V(telegramId, sessionId);
       return null;
@@ -26343,8 +27307,8 @@ async function saveComponent(telegramId, sessionId, sourcePath, sizeBytes, kind)
   await fsp4.copyFile(sourcePath, temp);
   await fsp4.rename(temp, target);
   const record = {
-    ...existing?.videoPath && fs21.existsSync(existing.videoPath) ? { videoPath: existing.videoPath } : {},
-    ...existing?.audioPath && fs21.existsSync(existing.audioPath) ? { audioPath: existing.audioPath } : {},
+    ...existing?.videoPath && fs22.existsSync(existing.videoPath) ? { videoPath: existing.videoPath } : {},
+    ...existing?.audioPath && fs22.existsSync(existing.audioPath) ? { audioPath: existing.audioPath } : {},
     savedAt: Date.now(),
     expiresAt: Date.now() + RETENTION_MS,
     sizeBytes
@@ -26361,7 +27325,7 @@ function saveA2VAudio(telegramId, sessionId, sourcePath, sizeBytes) {
   return saveComponent(telegramId, sessionId, sourcePath, sizeBytes, "audio");
 }
 async function clearA2V(telegramId, sessionId) {
-  const existed = fs21.existsSync(recordPath(telegramId, sessionId)) || fs21.existsSync(storeDir(telegramId, sessionId));
+  const existed = fs22.existsSync(recordPath(telegramId, sessionId)) || fs22.existsSync(storeDir(telegramId, sessionId));
   await fsp4.rm(storeDir(telegramId, sessionId), { recursive: true, force: true });
   return existed;
 }
@@ -26377,9 +27341,9 @@ var init_a2v_store = __esm({
 // src/whatsapp/commands/sticker-media.ts
 import sharp2 from "sharp";
 import { execFile as execFile3 } from "node:child_process";
-import { promises as fs22 } from "node:fs";
+import { promises as fs23 } from "node:fs";
 import os2 from "node:os";
-import path20 from "node:path";
+import path21 from "node:path";
 import { promisify as promisify3 } from "node:util";
 async function acquireStickerSlot() {
   if (activeStickerConversions >= MAX_CONCURRENT_STICKER_CONVERSIONS) {
@@ -26435,15 +27399,15 @@ async function encodeAnimatedSticker(source, options = {}) {
   }
   let root;
   try {
-    root = await fs22.mkdtemp(path20.join(os2.tmpdir(), `omega-sticker-${safeToken(options.sessionId)}-${safeToken(options.jobId)}-`));
+    root = await fs23.mkdtemp(path21.join(os2.tmpdir(), `omega-sticker-${safeToken(options.sessionId)}-${safeToken(options.jobId)}-`));
   } catch (error2) {
     release();
     throw error2;
   }
-  const inputPath = path20.join(root, `input${extensionFor2(options.inputExtension)}`);
-  const outputPath = path20.join(root, "output.webp");
+  const inputPath = path21.join(root, `input${extensionFor2(options.inputExtension)}`);
+  const outputPath = path21.join(root, "output.webp");
   try {
-    await fs22.writeFile(inputPath, source, { mode: 384 });
+    await fs23.writeFile(inputPath, source, { mode: 384 });
     let lastBytes = 0;
     const profiles = [
       // Start at full resolution and high quality. Reduce frame rate before
@@ -26457,7 +27421,7 @@ async function encodeAnimatedSticker(source, options = {}) {
       { fps: 8, size: 360, quality: 76 }
     ];
     for (const profile of profiles) {
-      await fs22.rm(outputPath, { force: true });
+      await fs23.rm(outputPath, { force: true });
       try {
         await execFileAsync3(ffmpeg, [
           "-hide_banner",
@@ -26484,16 +27448,16 @@ async function encodeAnimatedSticker(source, options = {}) {
           outputPath
         ], { timeout: 18e4, maxBuffer: 2 * 1024 * 1024 });
       } catch (error2) {
-        const stat = await fs22.stat(outputPath).catch(() => null);
+        const stat = await fs23.stat(outputPath).catch(() => null);
         if (!stat?.size) throw new Error(`FFmpeg animation conversion failed: ${String(error2).slice(0, 240)}`);
       }
-      const output2 = await fs22.readFile(outputPath);
+      const output2 = await fs23.readFile(outputPath);
       lastBytes = output2.length;
       if (lastBytes <= MAX_STICKER_BYTES && isAnimatedWebP(output2)) return output2;
     }
     throw new Error(lastBytes > MAX_STICKER_BYTES ? `Animated media remains too large after adaptive encoding (${Math.ceil(lastBytes / 1024)} KB).` : "FFmpeg produced a WebP that is not animated.");
   } finally {
-    await fs22.rm(root, { recursive: true, force: true }).catch(() => void 0);
+    await fs23.rm(root, { recursive: true, force: true }).catch(() => void 0);
     release();
   }
 }
@@ -26724,7 +27688,7 @@ __export(tg_sticker_exports, {
   resolvePostMedia: () => resolvePostMedia,
   telegramRetryAfterSeconds: () => telegramRetryAfterSeconds
 });
-import path21 from "node:path";
+import path22 from "node:path";
 function parseTgLink(raw) {
   const trimmed = (raw || "").trim();
   if (!trimmed) return null;
@@ -26923,7 +27887,7 @@ async function convertPackSticker(pack, sticker, options) {
     throw new Error("Telegram could not resolve the sticker file.");
   }
   const rawBuffer = await downloadFile(file.file_path, file.file_size);
-  const ext = path21.extname(file.file_path).toLowerCase();
+  const ext = path22.extname(file.file_path).toLowerCase();
   const stickerBuffer = ext === ".webm" || ext === ".mp4" || pack.is_video || sticker.type === "video" ? await videoToSticker(rawBuffer, ext || ".webm", options.sessionId) : await staticToSticker(rawBuffer);
   validateWebP(stickerBuffer);
   const finalBuffer = addStickerMetadata(stickerBuffer, options.packname || "PAPPY", options.author || "OMEGA");
@@ -27513,7 +28477,7 @@ var init_CaptchaSolver = __esm({
 });
 
 // src/media/validation.ts
-import fs23 from "node:fs/promises";
+import fs24 from "node:fs/promises";
 function isHtmlishBuffer(buf) {
   if (!buf || buf.length < 8) return false;
   const head = buf.subarray(0, Math.min(buf.length, 4096)).toString("latin1");
@@ -27569,7 +28533,7 @@ function sniffMedia(buf) {
 async function validateMediaFile(filePath, expected) {
   let fd;
   try {
-    fd = await fs23.open(filePath, "r");
+    fd = await fs24.open(filePath, "r");
   } catch {
     return { valid: false, reason: "file unreadable" };
   }
@@ -27605,9 +28569,9 @@ var init_validation = __esm({
 });
 
 // src/media/DownloadManager.ts
-import fs24 from "node:fs";
+import fs25 from "node:fs";
 import fsp5 from "node:fs/promises";
-import path22 from "node:path";
+import path23 from "node:path";
 import { createHash as createHash2, randomUUID } from "node:crypto";
 import axios from "axios";
 import PQueue2 from "p-queue";
@@ -27656,7 +28620,7 @@ function resolveFfmpegPath() {
   if (process.env.FFMPEG_PATH) return process.env.FFMPEG_PATH;
   for (const candidate of ["/usr/bin/ffmpeg", "/usr/local/bin/ffmpeg", "/bin/ffmpeg", "/opt/homebrew/bin/ffmpeg"]) {
     try {
-      if (fs24.existsSync(candidate)) return candidate;
+      if (fs25.existsSync(candidate)) return candidate;
     } catch {
     }
   }
@@ -27666,13 +28630,13 @@ function resolveCookiesFile() {
   const envPath = process.env.YTDLP_COOKIES?.trim() || process.env.YOUTUBE_COOKIES_FILE?.trim();
   if (envPath) {
     try {
-      if (fs24.existsSync(envPath)) return envPath;
+      if (fs25.existsSync(envPath)) return envPath;
     } catch {
     }
   }
-  const platformPath = path22.join(WORKSPACE_ROOT, "_platform", "cookies.txt");
+  const platformPath = path23.join(WORKSPACE_ROOT, "_platform", "cookies.txt");
   try {
-    return fs24.existsSync(platformPath) ? platformPath : void 0;
+    return fs25.existsSync(platformPath) ? platformPath : void 0;
   } catch {
     return void 0;
   }
@@ -27869,7 +28833,7 @@ var init_DownloadManager = __esm({
     SEARCH_LIMIT = 5;
     MAX_MEDIA_QUEUE = 80;
     INNERTUBE_STREAM_TIMEOUT_MS = 12e4;
-    TEMP_ROOT = path22.join(WORKSPACE_ROOT, "_platform", "media");
+    TEMP_ROOT = path23.join(WORKSPACE_ROOT, "_platform", "media");
     BING_URL = "https://www.bing.com/images/search";
     PINTEREST_RESOURCE = "https://www.pinterest.com/resource/BaseSearchResource/get/";
     UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36";
@@ -27897,7 +28861,7 @@ var init_DownloadManager = __esm({
         this.cookiesFile = resolveCookiesFile();
         this.captchaSolver = opts?.captchaSolver ?? getCaptchaSolver();
         this.fetchImpl = opts?.fetchImpl ?? fetch;
-        fs24.mkdirSync(this.tempDir, { recursive: true });
+        fs25.mkdirSync(this.tempDir, { recursive: true });
       }
       /**
        * Admit expensive external work through the singleton queue. This protects
@@ -27927,7 +28891,7 @@ var init_DownloadManager = __esm({
           const entries = await fsp5.readdir(this.tempDir);
           for (const name of entries) {
             try {
-              const st = await fsp5.stat(path22.join(this.tempDir, name));
+              const st = await fsp5.stat(path23.join(this.tempDir, name));
               if (st.isFile()) {
                 files++;
                 bytes += st.size;
@@ -27941,7 +28905,7 @@ var init_DownloadManager = __esm({
       }
       // ── Temp file lifecycle ──────────────────────────────────
       tempPath(ext) {
-        return path22.join(this.tempDir, `${Date.now()}-${randomUUID().slice(0, 8)}.${ext}`);
+        return path23.join(this.tempDir, `${Date.now()}-${randomUUID().slice(0, 8)}.${ext}`);
       }
       /** Remove a temp file (never throws). */
       static async cleanup(paths) {
@@ -27960,7 +28924,7 @@ var init_DownloadManager = __esm({
           const entries = await fsp5.readdir(this.tempDir);
           const now3 = Date.now();
           for (const name of entries) {
-            const full = path22.join(this.tempDir, name);
+            const full = path23.join(this.tempDir, name);
             try {
               const st = await fsp5.stat(full);
               if (st.isFile() && now3 - st.mtimeMs > olderThanMs) {
@@ -28281,12 +29245,12 @@ var init_DownloadManager = __esm({
         const finalArgs = { ...args };
         const started = Date.now();
         let attemptNo = 0;
-        let outPath = path22.join(this.tempDir, `${token2}.${ext}`);
+        let outPath = path23.join(this.tempDir, `${token2}.${ext}`);
         const attemptPaths = [];
         try {
           await this.withRetry(`download (${format})`, () => {
             attemptNo += 1;
-            outPath = path22.join(this.tempDir, `${token2}-${attemptNo}.${ext}`);
+            outPath = path23.join(this.tempDir, `${token2}-${attemptNo}.${ext}`);
             attemptPaths.push(outPath);
             return this.withTimeout(
               this.enqueueWork(() => this.runYtDlp(url, { ...finalArgs, output: outPath }), "Download"),
@@ -28299,7 +29263,7 @@ var init_DownloadManager = __esm({
             const solvedToken = await this.solveFor(url).catch(() => void 0);
             if (solvedToken) {
               attemptNo += 1;
-              const assistedPath = path22.join(this.tempDir, `${token2}-assist-${attemptNo}.${ext}`);
+              const assistedPath = path23.join(this.tempDir, `${token2}-assist-${attemptNo}.${ext}`);
               attemptPaths.push(assistedPath);
               try {
                 await this.withTimeout(
@@ -28309,7 +29273,7 @@ var init_DownloadManager = __esm({
                 );
                 outPath = assistedPath;
                 await _DownloadManager.cleanup(attemptPaths.filter((p) => p !== assistedPath));
-                logger.info("[Media] solver-assisted download succeeded", { file: path22.basename(assistedPath) });
+                logger.info("[Media] solver-assisted download succeeded", { file: path23.basename(assistedPath) });
               } catch (assistErr) {
                 logger.warn("[Media] solver-assisted retry failed \u2014 stopping with the original bot-check error", {
                   err: String(assistErr)
@@ -28326,7 +29290,7 @@ var init_DownloadManager = __esm({
             throw err;
           }
         }
-        if (!fs24.existsSync(outPath)) {
+        if (!fs25.existsSync(outPath)) {
           throw new MediaDownloadError("Download finished but produced no file.", "download-failed");
         }
         const stat = await fsp5.stat(outPath);
@@ -28378,7 +29342,7 @@ var init_DownloadManager = __esm({
           kind,
           bytes: stat.size,
           ms: Date.now() - started,
-          file: path22.basename(outPath)
+          file: path23.basename(outPath)
         });
         return [out];
       }
@@ -28478,7 +29442,7 @@ var init_DownloadManager = __esm({
           }
           const ext = extFor(kind, contentType, kind === "image" ? "jpg" : kind === "video" ? "mp4" : kind === "audio" ? "mp3" : "bin");
           outPath = this.tempPath(ext);
-          await pipeline(res.data, fs24.createWriteStream(outPath));
+          await pipeline(res.data, fs25.createWriteStream(outPath));
           const stat = await fsp5.stat(outPath);
           if (stat.size === 0) {
             await _DownloadManager.cleanup([outPath]);
@@ -28510,7 +29474,7 @@ var init_DownloadManager = __esm({
             );
           }
           const mime = sig?.mime ?? (contentType || this.mimetypeFor(realKind, realExt));
-          const fileName = `${safeName(path22.basename(url.split("?")[0] ?? ""), "media") || "media"}.${realExt}`;
+          const fileName = `${safeName(path23.basename(url.split("?")[0] ?? ""), "media") || "media"}.${realExt}`;
           return {
             kind: realKind,
             filePath: outPath,
@@ -29006,7 +29970,7 @@ ${stderr}`;
 });
 
 // src/media/DeliveryManager.ts
-import fs25 from "node:fs/promises";
+import fs26 from "node:fs/promises";
 function isMp4Media(media) {
   const mime = (media.mimetype ?? "").toLowerCase();
   if (mime.startsWith("video/mp4") || mime === "video/x-m4v") return true;
@@ -29059,11 +30023,11 @@ async function withMediaSendTimeout(promise, timeoutMs2 = MEDIA_SEND_TIMEOUT_MS)
 }
 async function loadBuffer(item) {
   const buffer = item.buffer ?? (item.filePath ? await (async () => {
-    const stat = await fs25.stat(item.filePath);
+    const stat = await fs26.stat(item.filePath);
     if (stat.size > MAX_SEND_BUFFER) {
       throw new Error(`File is ${(stat.size / 1024 / 1024).toFixed(1)} MB \u2014 too large to send.`);
     }
-    return fs25.readFile(item.filePath);
+    return fs26.readFile(item.filePath);
   })() : null);
   if (!buffer || buffer.byteLength === 0) throw new Error("Media source is empty.");
   const signature = sniffMedia(buffer);
@@ -29082,7 +30046,7 @@ async function buildContent2(item, buffer) {
       let thumb = null;
       if (item.thumbnailPath) {
         try {
-          const t = await fs25.readFile(item.thumbnailPath);
+          const t = await fs26.readFile(item.thumbnailPath);
           if (t.byteLength <= 4 * 1024 * 1024) thumb = t;
         } catch {
         }
@@ -29243,7 +30207,7 @@ var init_DeliveryManager = __esm({
         for (const p of paths) {
           if (!p) continue;
           try {
-            await fs25.unlink(p);
+            await fs26.unlink(p);
           } catch {
           }
         }
@@ -29439,7 +30403,7 @@ var init_MessageProgressManager = __esm({
 });
 
 // src/media/InteractionManager.ts
-import crypto8 from "node:crypto";
+import crypto9 from "node:crypto";
 function normalizeUserJid(value) {
   if (!value) return "";
   const at = value.indexOf("@");
@@ -29477,7 +30441,7 @@ var init_InteractionManager = __esm({
         const now3 = Date.now();
         const stored = {
           ...entry,
-          requestId: crypto8.randomBytes(8).toString("base64url"),
+          requestId: crypto9.randomBytes(8).toString("base64url"),
           createdAt: now3,
           expiresAt: now3 + TTL_MS
         };
@@ -29518,7 +30482,7 @@ var init_InteractionManager = __esm({
 });
 
 // src/whatsapp/games/poll-engine/poll-votes.ts
-import crypto9 from "crypto";
+import crypto10 from "crypto";
 async function getPollCrypto() {
   if (decryptFn !== void 0 && normalizeJidFn !== void 0) {
     return decryptFn && normalizeJidFn ? { decrypt: decryptFn, normalizeJid: normalizeJidFn } : null;
@@ -29560,7 +30524,7 @@ function voterJidCandidates(voterJid) {
   return out.length > 0 ? out : [""];
 }
 function optionHashHex(optionName) {
-  return crypto9.createHash("sha256").update(Buffer.from(optionName, "utf8")).digest("hex");
+  return crypto10.createHash("sha256").update(Buffer.from(optionName, "utf8")).digest("hex");
 }
 function toHex(value) {
   if (typeof value === "string") {
@@ -29672,7 +30636,7 @@ __export(PollManager_exports, {
   PollManager: () => PollManager,
   getPollManager: () => getPollManager
 });
-import crypto10 from "node:crypto";
+import crypto11 from "node:crypto";
 function getPollManager() {
   if (!instance2) instance2 = new PollManager();
   return instance2;
@@ -29703,7 +30667,7 @@ var init_PollManager = __esm({
        */
       async create(socket, telegramId, cfg) {
         const durationMs = Math.min(Math.max(cfg.durationMs, POLL_MIN_MS), POLL_MAX_MS);
-        const secret = cfg.secret ?? crypto10.randomBytes(32);
+        const secret = cfg.secret ?? crypto11.randomBytes(32);
         const scope = { sessionId: cfg.sessionId, chatJid: cfg.chatJid };
         let sent;
         try {
@@ -29857,7 +30821,7 @@ var init_PollManager = __esm({
        * Used by deterministic unit tests for vote/winner logic.
        */
       _registerForTest(scope, pollMsgId, options, onComplete, durationMs = 6e4, meta = {}) {
-        const secret = crypto10.randomBytes(32);
+        const secret = crypto11.randomBytes(32);
         registerPollSecret(pollMsgId, secret, scope);
         const poll = {
           scope,
@@ -29913,7 +30877,7 @@ var init_PollManager = __esm({
 });
 
 // src/media/MediaSessionStore.ts
-import crypto11 from "node:crypto";
+import crypto12 from "node:crypto";
 var TTL_MS2, SWEEP_INTERVAL_MS, MediaSessionStore, mediaSessionStore;
 var init_MediaSessionStore = __esm({
   "src/media/MediaSessionStore.ts"() {
@@ -29930,7 +30894,7 @@ var init_MediaSessionStore = __esm({
       }
       create(entry) {
         this.sweep();
-        const token2 = crypto11.randomBytes(9).toString("base64url");
+        const token2 = crypto12.randomBytes(9).toString("base64url");
         this.sessions.set(token2, { ...entry, createdAt: Date.now() });
         return token2;
       }
@@ -31523,7 +32487,7 @@ var require_package = __commonJS({
   "package.json"(exports, module) {
     module.exports = {
       name: "@workspace/wa-bridge",
-      version: "1.2.21",
+      version: "1.2.22",
       description: "Telegram \u2194 WhatsApp Automation Bridge \u2014 Production-Grade Multi-Device Control Center",
       type: "module",
       main: "dist/index.js",
@@ -32061,16 +33025,16 @@ var init_actions = __esm({
 });
 
 // src/whatsapp/anti-system/pending-restores.ts
-import fs26 from "fs";
-import path23 from "path";
+import fs27 from "fs";
+import path24 from "path";
 function restorePath(sessionId, telegramId) {
-  return path23.join(sessionDir(telegramId, sessionId), "pending-restores.json");
+  return path24.join(sessionDir(telegramId, sessionId), "pending-restores.json");
 }
 function loadAll(sessionId, telegramId) {
   const p = restorePath(sessionId, telegramId);
-  if (!fs26.existsSync(p)) return [];
+  if (!fs27.existsSync(p)) return [];
   try {
-    return JSON.parse(fs26.readFileSync(p, "utf8"));
+    return JSON.parse(fs27.readFileSync(p, "utf8"));
   } catch (err) {
     logger.warn("[PendingRestores] Failed to parse, resetting", { err: String(err) });
     return [];
@@ -32078,8 +33042,8 @@ function loadAll(sessionId, telegramId) {
 }
 function saveAll(sessionId, telegramId, restores) {
   const p = restorePath(sessionId, telegramId);
-  fs26.mkdirSync(path23.dirname(p), { recursive: true });
-  fs26.writeFileSync(p, JSON.stringify(restores, null, 2), "utf8");
+  fs27.mkdirSync(path24.dirname(p), { recursive: true });
+  fs27.writeFileSync(p, JSON.stringify(restores, null, 2), "utf8");
 }
 function addPendingRestore(sessionId, telegramId, entry) {
   const restores = loadAll(sessionId, telegramId);
@@ -35566,7 +36530,7 @@ var init_config2 = __esm({
 });
 
 // src/whatsapp/games/poll-engine/engine.ts
-import crypto12 from "crypto";
+import crypto13 from "crypto";
 function scopeKey3(scope) {
   return `${scope.sessionId}:${scope.chatJid}`;
 }
@@ -35963,7 +36927,7 @@ ${message.slice(0, 300)}`
       /** Create a question, add it to the game, arm its expiry timer. */
       createQuestion(scope, game, prompt, options, extra) {
         const id = `q${game.questions.length}`;
-        const secret = crypto12.randomBytes(32);
+        const secret = crypto13.randomBytes(32);
         const createdAt = this.now();
         const question2 = {
           id,
@@ -36724,10 +37688,10 @@ var init_poll_engine = __esm({
 });
 
 // src/whatsapp/games/poll-engine/persistence.ts
-import fs27 from "fs";
-import path24 from "path";
+import fs28 from "fs";
+import path25 from "path";
 function gamesFilePath(telegramId, sessionId) {
-  return path24.join(sessionDir(telegramId, sessionId), "poll-games.json");
+  return path25.join(sessionDir(telegramId, sessionId), "poll-games.json");
 }
 function scopeKey4(snapshot) {
   return `${snapshot.scope.sessionId}:${snapshot.scope.chatJid}:${snapshot.type}`;
@@ -36735,8 +37699,8 @@ function scopeKey4(snapshot) {
 function loadFile(telegramId, sessionId) {
   try {
     const p = gamesFilePath(telegramId, sessionId);
-    if (!fs27.existsSync(p)) return {};
-    const parsed = JSON.parse(fs27.readFileSync(p, "utf8"));
+    if (!fs28.existsSync(p)) return {};
+    const parsed = JSON.parse(fs28.readFileSync(p, "utf8"));
     return parsed ?? {};
   } catch (err) {
     logger.warn("[PollGame] snapshot read failed", { sessionId, err: String(err) });
@@ -36746,10 +37710,10 @@ function loadFile(telegramId, sessionId) {
 function writeFile(telegramId, sessionId, data) {
   try {
     const p = gamesFilePath(telegramId, sessionId);
-    fs27.mkdirSync(path24.dirname(p), { recursive: true });
+    fs28.mkdirSync(path25.dirname(p), { recursive: true });
     const tmp = `${p}.tmp-${process.pid}`;
-    fs27.writeFileSync(tmp, JSON.stringify(data, null, 2));
-    fs27.renameSync(tmp, p);
+    fs28.writeFileSync(tmp, JSON.stringify(data, null, 2));
+    fs28.renameSync(tmp, p);
   } catch (err) {
     logger.warn("[PollGame] snapshot write failed", { sessionId, err: String(err) });
   }
@@ -36770,7 +37734,7 @@ function loadPollGameSnapshots(telegramId, sessionId) {
 function clearPollGameSnapshots(telegramId, sessionId) {
   try {
     const p = gamesFilePath(telegramId, sessionId);
-    if (fs27.existsSync(p)) fs27.rmSync(p, { force: true });
+    if (fs28.existsSync(p)) fs28.rmSync(p, { force: true });
   } catch {
   }
 }
@@ -36906,11 +37870,11 @@ __export(qc_sticker_exports, {
   segmentGraphemes: () => segmentGraphemes
 });
 import sharp4 from "sharp";
-import fs28 from "node:fs";
+import fs29 from "node:fs";
 function resolveEmojiFontFamily() {
   if (emojiFontResolved) return cachedEmojiFontFamily;
   emojiFontResolved = true;
-  cachedEmojiFontFamily = EMOJI_FONT_CANDIDATES.find((candidate) => candidate.paths.some((fontPath) => fs28.existsSync(fontPath)))?.family ?? null;
+  cachedEmojiFontFamily = EMOJI_FONT_CANDIDATES.find((candidate) => candidate.paths.some((fontPath) => fs29.existsSync(fontPath)))?.family ?? null;
   return cachedEmojiFontFamily;
 }
 function emojiFontFamily() {
@@ -37386,8 +38350,8 @@ __export(event_handlers_exports, {
   unregisterSessionOwner: () => unregisterSessionOwner
 });
 import fsp8 from "node:fs/promises";
-import path25 from "path";
-import crypto13 from "crypto";
+import path26 from "path";
+import crypto14 from "crypto";
 function explainWhatsAppOperationError(error2, operation) {
   const raw = String(error2);
   if (/account_reachout_restricted/iu.test(raw)) {
@@ -38166,7 +39130,7 @@ async function handleMessages(sessionId, upsert, socket) {
         const pollCreatorJid = authorFn?.(pollUpdate.pollCreationMessageKey, normalizedMeId) ?? "";
         const voterJid = authorFn?.(msg.key, normalizedMeId) ?? msg.key.participant ?? msg.key.remoteJid ?? "";
         const ownerOptions = trackedOwner?.options ?? managedPoll?.options;
-        const bindingSecretFingerprint = trackedOwner?.messageSecret ? crypto13.createHash("sha256").update(Buffer.from(trackedOwner.messageSecret, "base64")).digest("hex").slice(0, 16) : "";
+        const bindingSecretFingerprint = trackedOwner?.messageSecret ? crypto14.createHash("sha256").update(Buffer.from(trackedOwner.messageSecret, "base64")).digest("hex").slice(0, 16) : "";
         logger.info("[PollGame] poll crypto context", {
           sessionId,
           pollMsgId: pollUpdate.pollCreationMessageKey.id,
@@ -38199,7 +39163,7 @@ async function handleMessages(sessionId, upsert, socket) {
           logger.info("[PollGame] authoritative poll secret loaded", {
             sessionId,
             pollMsgId: pollUpdate.pollCreationMessageKey.id,
-            fingerprint: crypto13.createHash("sha256").update(Buffer.from(actualSecret)).digest("hex").slice(0, 16)
+            fingerprint: crypto14.createHash("sha256").update(Buffer.from(actualSecret)).digest("hex").slice(0, 16)
           });
         }
         const decrypted = await decryptVoteToOption({
@@ -38853,8 +39817,8 @@ async function processMessageWithConfig(sessionId, telegramId, msg, socket, repl
       const media = await extractMedia();
       if (media) {
         const filename = `idea_${Date.now()}_${Math.floor(Math.random() * 1e3)}.${media.mimeType.split("/")[1]}`;
-        const filePath = path25.join(process.cwd(), "workspaces", "_platform", "media", filename);
-        await fsp8.mkdir(path25.dirname(filePath), { recursive: true });
+        const filePath = path26.join(process.cwd(), "workspaces", "_platform", "media", filename);
+        await fsp8.mkdir(path26.dirname(filePath), { recursive: true });
         await fsp8.writeFile(filePath, media.buffer);
         attachments.push({ type: media.type, filePath, mimeType: media.mimeType });
       }
@@ -39657,9 +40621,9 @@ Examples: Africa/Lagos, Europe/London, America/New_York`));
         await reply(warningCard("REPLY TO MEDIA", `Reply to a ${expected} with ${config2.prefix}${command}.`));
         break;
       }
-      const dir = path25.join(sessionDir(telegramId, sessionId), "menu-media");
+      const dir = path26.join(sessionDir(telegramId, sessionId), "menu-media");
       await fsp8.mkdir(dir, { recursive: true });
-      const filePath = path25.join(dir, `menu.${expected === "image" ? "jpg" : "mp4"}`);
+      const filePath = path26.join(dir, `menu.${expected === "image" ? "jpg" : "mp4"}`);
       await fsp8.writeFile(filePath, media.buffer);
       updateSessionMeta(telegramId, sessionId, { menuMedia: { type: expected, filePath, mimeType: media.mimeType } });
       await reply(successCard("MENU MEDIA SET", `Menus will now render with this ${expected}.`));
@@ -41993,8 +42957,8 @@ __export(socket_manager_exports, {
 });
 import makeWASocket from "@crysnovax/baileys";
 import * as Baileys from "@crysnovax/baileys";
-import fs29 from "node:fs";
-import path26 from "node:path";
+import fs30 from "node:fs";
+import path27 from "node:path";
 import { Boom } from "@hapi/boom";
 import P from "pino";
 import QRCode from "qrcode";
@@ -42249,7 +43213,7 @@ function hasRegisteredAuth(sessionId, telegramId) {
   if (!owner) return false;
   try {
     const authDir = sessionAuthDir(owner, sessionId);
-    const creds = JSON.parse(fs29.readFileSync(path26.join(authDir, "creds.json"), "utf8"));
+    const creds = JSON.parse(fs30.readFileSync(path27.join(authDir, "creds.json"), "utf8"));
     return creds.registered === true;
   } catch {
     return false;
@@ -43162,8 +44126,8 @@ __export(workspace_exports, {
   withWorkspaceMutationLock: () => withWorkspaceMutationLock,
   workspaceDir: () => workspaceDir
 });
-import fs30 from "fs";
-import path27 from "path";
+import fs31 from "fs";
+import path28 from "path";
 import { fileURLToPath as fileURLToPath3 } from "url";
 import os3 from "os";
 import { execFile as execFile4 } from "node:child_process";
@@ -43171,23 +44135,23 @@ import { promisify as promisify4 } from "node:util";
 function migrateLegacyWorkspaces() {
   try {
     const envLegacy = process.env.OMEGA_LEGACY_ROOT?.trim();
-    const defaultRoot = path27.join(os3.homedir(), ".omega-v1", "workspaces");
-    const candidates = envLegacy ? [path27.resolve(envLegacy)] : WORKSPACE_ROOT === defaultRoot ? [
-      path27.resolve(__dirname3, "../../../workspaces"),
+    const defaultRoot = path28.join(os3.homedir(), ".omega-v1", "workspaces");
+    const candidates = envLegacy ? [path28.resolve(envLegacy)] : WORKSPACE_ROOT === defaultRoot ? [
+      path28.resolve(__dirname3, "../../../workspaces"),
       // bundled build: artifacts/workspaces
-      path27.resolve(__dirname3, "../../workspaces")
+      path28.resolve(__dirname3, "../../workspaces")
       // dev/tsx: wa-bridge/workspaces
     ] : [];
     const legacy = candidates.find((c) => {
-      if (c === WORKSPACE_ROOT || !fs30.existsSync(c)) return false;
-      return fs30.readdirSync(c).filter((f) => f !== ".gitkeep").length > 0;
+      if (c === WORKSPACE_ROOT || !fs31.existsSync(c)) return false;
+      return fs31.readdirSync(c).filter((f) => f !== ".gitkeep").length > 0;
     });
     if (!legacy) return;
-    if (fs30.existsSync(WORKSPACE_ROOT) && fs30.readdirSync(WORKSPACE_ROOT).length > 0) return;
-    fs30.mkdirSync(WORKSPACE_ROOT, { recursive: true });
-    for (const entry of fs30.readdirSync(legacy)) {
+    if (fs31.existsSync(WORKSPACE_ROOT) && fs31.readdirSync(WORKSPACE_ROOT).length > 0) return;
+    fs31.mkdirSync(WORKSPACE_ROOT, { recursive: true });
+    for (const entry of fs31.readdirSync(legacy)) {
       if (entry === ".gitkeep") continue;
-      fs30.cpSync(path27.join(legacy, entry), path27.join(WORKSPACE_ROOT, entry), { recursive: true });
+      fs31.cpSync(path28.join(legacy, entry), path28.join(WORKSPACE_ROOT, entry), { recursive: true });
     }
     logger.warn(
       `[Workspace] Migrated session data from legacy in-repo path ${legacy} \u2192 ${WORKSPACE_ROOT}. Sessions are now stored outside the git repository and will survive git pull/reset/clean.`
@@ -43198,63 +44162,63 @@ function migrateLegacyWorkspaces() {
 }
 function ensurePrivatePath(p) {
   try {
-    if (fs30.existsSync(p)) fs30.chmodSync(p, 384);
+    if (fs31.existsSync(p)) fs31.chmodSync(p, 384);
   } catch {
   }
 }
 function atomicWriteJson2(p, data) {
-  fs30.mkdirSync(path27.dirname(p), { recursive: true, mode: 448 });
+  fs31.mkdirSync(path28.dirname(p), { recursive: true, mode: 448 });
   try {
-    fs30.chmodSync(path27.dirname(p), 448);
+    fs31.chmodSync(path28.dirname(p), 448);
   } catch {
   }
   const tmp = `${p}.tmp-${process.pid}`;
-  fs30.writeFileSync(tmp, JSON.stringify(data, null, 2), { mode: 384 });
+  fs31.writeFileSync(tmp, JSON.stringify(data, null, 2), { mode: 384 });
   try {
-    fs30.chmodSync(tmp, 384);
+    fs31.chmodSync(tmp, 384);
   } catch {
   }
-  fs30.renameSync(tmp, p);
+  fs31.renameSync(tmp, p);
   try {
-    fs30.chmodSync(p, 384);
+    fs31.chmodSync(p, 384);
   } catch {
   }
 }
 function workspaceDir(telegramId) {
-  return path27.join(WORKSPACE_ROOT, telegramId);
+  return path28.join(WORKSPACE_ROOT, telegramId);
 }
 function sessionDir(telegramId, sessionId) {
-  return path27.join(workspaceDir(telegramId), "sessions", sessionId);
+  return path28.join(workspaceDir(telegramId), "sessions", sessionId);
 }
 function sessionAuthDir(telegramId, sessionId) {
-  return path27.join(sessionDir(telegramId, sessionId), "auth");
+  return path28.join(sessionDir(telegramId, sessionId), "auth");
 }
 function sessionLogDir(telegramId, sessionId) {
-  return path27.join(sessionDir(telegramId, sessionId), "logs");
+  return path28.join(sessionDir(telegramId, sessionId), "logs");
 }
 function bucketPath(telegramId, bucket) {
-  return path27.join(workspaceDir(telegramId), "buckets", `${bucket}.json`);
+  return path28.join(workspaceDir(telegramId), "buckets", `${bucket}.json`);
 }
 function joinJobsPath(telegramId) {
-  return path27.join(workspaceDir(telegramId), "join-jobs.json");
+  return path28.join(workspaceDir(telegramId), "join-jobs.json");
 }
 function promotionJobsPath(telegramId) {
-  return path27.join(workspaceDir(telegramId), "promotion-jobs.json");
+  return path28.join(workspaceDir(telegramId), "promotion-jobs.json");
 }
 function promotionMediaDir(telegramId) {
-  const dir = path27.join(workspaceDir(telegramId), "promotion-media");
-  fs30.mkdirSync(dir, { recursive: true, mode: 448 });
+  const dir = path28.join(workspaceDir(telegramId), "promotion-media");
+  fs31.mkdirSync(dir, { recursive: true, mode: 448 });
   return dir;
 }
 function promotionMediaPath(telegramId, extension) {
   const safeExtension = String(extension || "bin").replace(/[^a-z0-9]/giu, "").slice(0, 8) || "bin";
-  return path27.join(promotionMediaDir(telegramId), `${Date.now()}-${process.pid}-${Math.random().toString(36).slice(2, 10)}.${safeExtension}`);
+  return path28.join(promotionMediaDir(telegramId), `${Date.now()}-${process.pid}-${Math.random().toString(36).slice(2, 10)}.${safeExtension}`);
 }
 function joinStatePath(telegramId) {
-  return path27.join(workspaceDir(telegramId), "join-state.json");
+  return path28.join(workspaceDir(telegramId), "join-state.json");
 }
 function masterGenerationPath(telegramId) {
-  return path27.join(workspaceDir(telegramId), "master-generation.json");
+  return path28.join(workspaceDir(telegramId), "master-generation.json");
 }
 function currentMasterGeneration(telegramId) {
   const value = readJsonFile(masterGenerationPath(telegramId), 1);
@@ -43271,7 +44235,7 @@ function normalizeCollectedLink(rawLink) {
   return match?.[1] ? `https://chat.whatsapp.com/${match[1]}` : input2.replace(/[?#].*$/u, "").replace(/\/$/u, "");
 }
 function configPath2(telegramId) {
-  return path27.join(workspaceDir(telegramId), "config.json");
+  return path28.join(workspaceDir(telegramId), "config.json");
 }
 function defaultConfig(telegramId) {
   return {
@@ -43322,7 +44286,7 @@ function defaultConfig(telegramId) {
 function initWorkspace(telegramId) {
   const dir = workspaceDir(telegramId);
   for (const sub of ["sessions", "buckets", "exports"]) {
-    fs30.mkdirSync(path27.join(dir, sub), { recursive: true });
+    fs31.mkdirSync(path28.join(dir, sub), { recursive: true });
   }
   const config2 = defaultConfig(telegramId);
   const workspace = {
@@ -43346,7 +44310,7 @@ function initWorkspace(telegramId) {
 }
 function loadWorkspace(telegramId) {
   const dir = workspaceDir(telegramId);
-  if (!fs30.existsSync(dir)) {
+  if (!fs31.existsSync(dir)) {
     return initWorkspace(telegramId);
   }
   const config2 = loadConfig(telegramId);
@@ -43373,10 +44337,10 @@ function configuredOwnerWaNumbers() {
 function loadConfig(telegramId) {
   const p = configPath2(telegramId);
   const base = defaultConfig(telegramId);
-  if (!fs30.existsSync(p)) return { ...base, ownerWaNumbers: configuredOwnerWaNumbers() };
+  if (!fs31.existsSync(p)) return { ...base, ownerWaNumbers: configuredOwnerWaNumbers() };
   ensurePrivatePath(p);
   try {
-    const stored = JSON.parse(fs30.readFileSync(p, "utf8"));
+    const stored = JSON.parse(fs31.readFileSync(p, "utf8"));
     return {
       ...base,
       ...stored,
@@ -43399,7 +44363,7 @@ function updateConfig(telegramId, patch) {
   return updated;
 }
 function sessionConfigPath(telegramId, sessionId) {
-  return path27.join(sessionDir(telegramId, sessionId), "config.json");
+  return path28.join(sessionDir(telegramId, sessionId), "config.json");
 }
 function loadSessionConfig(telegramId, sessionId) {
   const base = loadConfig(telegramId);
@@ -43416,7 +44380,7 @@ function loadSessionConfig(telegramId, sessionId) {
   };
   const globalSudo = getGlobalSudoNumbers(telegramId);
   const mergedSudo = [.../* @__PURE__ */ new Set([...base.sudoNumbers ?? [], ...storedSudoNumbers(telegramId, sessionId, p), ...globalSudo])];
-  if (!fs30.existsSync(p)) {
+  if (!fs31.existsSync(p)) {
     return {
       ...base,
       ...isolatedDefaults,
@@ -43438,7 +44402,7 @@ function loadSessionConfig(telegramId, sessionId) {
   }
   try {
     ensurePrivatePath(p);
-    const stored = JSON.parse(fs30.readFileSync(p, "utf8"));
+    const stored = JSON.parse(fs31.readFileSync(p, "utf8"));
     return {
       ...base,
       ...isolatedDefaults,
@@ -43479,8 +44443,8 @@ function loadSessionConfig(telegramId, sessionId) {
 }
 function storedSudoNumbers(telegramId, sessionId, p) {
   try {
-    if (!fs30.existsSync(p)) return [];
-    const stored = JSON.parse(fs30.readFileSync(p, "utf8"));
+    if (!fs31.existsSync(p)) return [];
+    const stored = JSON.parse(fs31.readFileSync(p, "utf8"));
     return stored.sudoNumbers ?? [];
   } catch {
     return [];
@@ -43600,13 +44564,13 @@ function updateSessionConfig(telegramId, sessionId, patch) {
   return updated;
 }
 function sessionMetaPath(telegramId, sessionId) {
-  return path27.join(sessionDir(telegramId, sessionId), "meta.json");
+  return path28.join(sessionDir(telegramId, sessionId), "meta.json");
 }
 function saveSessionMeta(meta) {
   const dir = sessionDir(meta.telegramId, meta.sessionId);
-  fs30.mkdirSync(dir, { recursive: true });
-  fs30.mkdirSync(sessionAuthDir(meta.telegramId, meta.sessionId), { recursive: true });
-  fs30.mkdirSync(sessionLogDir(meta.telegramId, meta.sessionId), { recursive: true });
+  fs31.mkdirSync(dir, { recursive: true });
+  fs31.mkdirSync(sessionAuthDir(meta.telegramId, meta.sessionId), { recursive: true });
+  fs31.mkdirSync(sessionLogDir(meta.telegramId, meta.sessionId), { recursive: true });
   atomicWriteJson2(sessionMetaPath(meta.telegramId, meta.sessionId), meta);
   const owners = sessionOwnerIndex.get(meta.sessionId) ?? /* @__PURE__ */ new Set();
   owners.add(meta.telegramId);
@@ -43614,9 +44578,9 @@ function saveSessionMeta(meta) {
 }
 function loadSessionMeta(telegramId, sessionId) {
   const p = sessionMetaPath(telegramId, sessionId);
-  if (!fs30.existsSync(p)) return null;
+  if (!fs31.existsSync(p)) return null;
   try {
-    const stored = JSON.parse(fs30.readFileSync(p, "utf8"));
+    const stored = JSON.parse(fs31.readFileSync(p, "utf8"));
     let status = stored.status;
     if (status === "connecting") status = "CONNECTING";
     if (status === "reconnecting") status = "RECONNECTING";
@@ -43643,10 +44607,10 @@ function loadSessionMeta(telegramId, sessionId) {
   }
 }
 function loadAllSessions(telegramId) {
-  const sessDir = path27.join(workspaceDir(telegramId), "sessions");
-  if (!fs30.existsSync(sessDir)) return {};
+  const sessDir = path28.join(workspaceDir(telegramId), "sessions");
+  if (!fs31.existsSync(sessDir)) return {};
   const sessions2 = {};
-  for (const entry of fs30.readdirSync(sessDir, { withFileTypes: true })) {
+  for (const entry of fs31.readdirSync(sessDir, { withFileTypes: true })) {
     if (!entry.isDirectory()) continue;
     const meta = loadSessionMeta(telegramId, entry.name);
     if (meta) sessions2[entry.name] = meta;
@@ -43655,9 +44619,9 @@ function loadAllSessions(telegramId) {
 }
 function loadAllSessionsGlobally() {
   try {
-    if (!fs30.existsSync(WORKSPACE_ROOT)) return [];
+    if (!fs31.existsSync(WORKSPACE_ROOT)) return [];
     const all = [];
-    for (const entry of fs30.readdirSync(WORKSPACE_ROOT, { withFileTypes: true })) {
+    for (const entry of fs31.readdirSync(WORKSPACE_ROOT, { withFileTypes: true })) {
       if (!entry.isDirectory() || entry.name === "_platform") continue;
       const sessions2 = loadAllSessions(entry.name);
       for (const [sessionId, meta] of Object.entries(sessions2)) {
@@ -43708,12 +44672,12 @@ function releaseSessionNotification(telegramId, sessionId) {
 async function purgeMetadataLessOrphan(telegramId, sessionId) {
   const dir = sessionDir(telegramId, sessionId);
   const metaPath = sessionMetaPath(telegramId, sessionId);
-  if (loadSessionMeta(telegramId, sessionId) || fs30.existsSync(metaPath) || !fs30.existsSync(dir)) return false;
+  if (loadSessionMeta(telegramId, sessionId) || fs31.existsSync(metaPath) || !fs31.existsSync(dir)) return false;
   const authDir = sessionAuthDir(telegramId, sessionId);
   const hasFilesRecursively = (current) => {
-    if (!fs30.existsSync(current)) return false;
-    for (const entry of fs30.readdirSync(current, { withFileTypes: true })) {
-      const child = path27.join(current, entry.name);
+    if (!fs31.existsSync(current)) return false;
+    for (const entry of fs31.readdirSync(current, { withFileTypes: true })) {
+      const child = path28.join(current, entry.name);
       if (entry.isFile() || entry.isSymbolicLink()) return true;
       if (entry.isDirectory() && hasFilesRecursively(child)) return true;
     }
@@ -43727,7 +44691,7 @@ async function purgeMetadataLessOrphan(telegramId, sessionId) {
   } catch {
   }
   if (hasRuntimeSocket) return false;
-  fs30.rmSync(dir, { recursive: true, force: true });
+  fs31.rmSync(dir, { recursive: true, force: true });
   logger.warn("[PurgeEngine] Removed verified metadata-less orphan tree", { telegramId, sessionId });
   return true;
 }
@@ -43848,9 +44812,9 @@ async function purgeSession(telegramId, sessionId) {
       logger.warn(`[PurgeEngine] Runtime cleanup failed for ${sessionId}`, { err: String(err) });
     }
     logger.info(`[PurgeEngine] Resetting delivery flags for ${sessionId}`);
-    if (fs30.existsSync(dir)) {
+    if (fs31.existsSync(dir)) {
       try {
-        fs30.rmSync(dir, { recursive: true, force: true });
+        fs31.rmSync(dir, { recursive: true, force: true });
         logger.info(`[PurgeEngine] Session directory removed: ${dir}`);
       } catch (err) {
         logger.error(`[PurgeEngine] Failed to remove directory ${dir}`, { err: String(err) });
@@ -43874,12 +44838,12 @@ async function purgeSession(telegramId, sessionId) {
 async function purgeAllSessions(telegramId) {
   const sessions2 = Object.values(loadAllSessions(telegramId));
   await Promise.all(sessions2.map((meta) => purgeSession(telegramId, meta.sessionId)));
-  const sessDir = path27.join(workspaceDir(telegramId), "sessions");
-  if (fs30.existsSync(sessDir)) {
-    for (const entry of fs30.readdirSync(sessDir, { withFileTypes: true })) {
+  const sessDir = path28.join(workspaceDir(telegramId), "sessions");
+  if (fs31.existsSync(sessDir)) {
+    for (const entry of fs31.readdirSync(sessDir, { withFileTypes: true })) {
       if (entry.isDirectory()) {
         try {
-          fs30.rmSync(path27.join(sessDir, entry.name), { recursive: true, force: true });
+          fs31.rmSync(path28.join(sessDir, entry.name), { recursive: true, force: true });
         } catch {
         }
       }
@@ -43888,19 +44852,19 @@ async function purgeAllSessions(telegramId) {
   logger.warn(`[Workspace] Purged all sessions for ${telegramId}`, { count: sessions2.length });
 }
 function withWorkspaceMutationLock(telegramId, work) {
-  const lockPath = path27.join(workspaceDir(telegramId), ".buckets.lock");
-  fs30.mkdirSync(workspaceDir(telegramId), { recursive: true, mode: 448 });
+  const lockPath = path28.join(workspaceDir(telegramId), ".buckets.lock");
+  fs31.mkdirSync(workspaceDir(telegramId), { recursive: true, mode: 448 });
   let fd;
   try {
-    fd = fs30.openSync(lockPath, "wx", 384);
-    fs30.writeSync(fd, `${process.pid}:${Date.now()}`);
+    fd = fs31.openSync(lockPath, "wx", 384);
+    fs31.writeSync(fd, `${process.pid}:${Date.now()}`);
   } catch (error2) {
     if (error2.code !== "EEXIST") throw error2;
     let reclaimed = false;
     try {
-      const stat = fs30.statSync(lockPath);
+      const stat = fs31.statSync(lockPath);
       if (Date.now() - stat.mtimeMs > BUCKET_LOCK_TTL_MS) {
-        fs30.rmSync(lockPath, { force: true });
+        fs31.rmSync(lockPath, { force: true });
         reclaimed = true;
       }
     } catch (statError) {
@@ -43909,8 +44873,8 @@ function withWorkspaceMutationLock(telegramId, work) {
     }
     if (reclaimed) {
       try {
-        fd = fs30.openSync(lockPath, "wx", 384);
-        fs30.writeSync(fd, `${process.pid}:${Date.now()}`);
+        fd = fs31.openSync(lockPath, "wx", 384);
+        fs31.writeSync(fd, `${process.pid}:${Date.now()}`);
       } catch (retryError) {
         if (retryError.code !== "EEXIST") throw retryError;
       }
@@ -43923,11 +44887,11 @@ function withWorkspaceMutationLock(telegramId, work) {
     return work();
   } finally {
     try {
-      fs30.closeSync(fd);
+      fs31.closeSync(fd);
     } catch {
     }
     try {
-      fs30.rmSync(lockPath, { force: true });
+      fs31.rmSync(lockPath, { force: true });
     } catch {
     }
   }
@@ -43993,12 +44957,12 @@ function loadBucket(telegramId, bucket) {
   const p = bucketPath(telegramId, bucket);
   const key2 = bucketCacheKey(telegramId, bucket);
   try {
-    const stat = fs30.statSync(p);
+    const stat = fs31.statSync(p);
     const cached = bucketCache.get(key2);
     if (cached && cached.mtimeMs === stat.mtimeMs && cached.ctimeMs === stat.ctimeMs && cached.size === stat.size) {
       return cloneBucketEntries(cached.entries);
     }
-    const parsed = JSON.parse(fs30.readFileSync(p, "utf8"));
+    const parsed = JSON.parse(fs31.readFileSync(p, "utf8"));
     const entries = Array.isArray(parsed) ? parsed.filter((entry) => Boolean(entry && typeof entry === "object")).map(normalizeEntry) : [];
     cacheBucket(telegramId, bucket, stat, entries);
     return cloneBucketEntries(entries);
@@ -44033,9 +44997,9 @@ function retireActiveLink(telegramId, linkOrKey, details) {
   });
 }
 function readJsonFile(file, fallback) {
-  if (!fs30.existsSync(file)) return fallback;
+  if (!fs31.existsSync(file)) return fallback;
   try {
-    const value = JSON.parse(fs30.readFileSync(file, "utf8"));
+    const value = JSON.parse(fs31.readFileSync(file, "utf8"));
     return value;
   } catch {
     return fallback;
@@ -44613,13 +45577,13 @@ function moveToErrorBucket(telegramId, entries) {
   });
 }
 function exportDir(telegramId) {
-  const dir = path27.join(workspaceDir(telegramId), "exports");
-  fs30.mkdirSync(dir, { recursive: true });
+  const dir = path28.join(workspaceDir(telegramId), "exports");
+  fs31.mkdirSync(dir, { recursive: true });
   return dir;
 }
 function getAllUserIds() {
-  if (!fs30.existsSync(WORKSPACE_ROOT)) return [];
-  return fs30.readdirSync(WORKSPACE_ROOT, { withFileTypes: true }).filter((d) => d.isDirectory() && d.name !== "_platform").map((d) => d.name);
+  if (!fs31.existsSync(WORKSPACE_ROOT)) return [];
+  return fs31.readdirSync(WORKSPACE_ROOT, { withFileTypes: true }).filter((d) => d.isDirectory() && d.name !== "_platform").map((d) => d.name);
 }
 function loadPlatformSessions2() {
   return getAllUserIds().flatMap((telegramId) => Object.values(loadAllSessions(telegramId)));
@@ -44639,9 +45603,9 @@ function findSessionOwner(sessionId) {
   return null;
 }
 function loadPlatformConfig() {
-  if (!fs30.existsSync(PLATFORM_CONFIG_PATH)) return {};
+  if (!fs31.existsSync(PLATFORM_CONFIG_PATH)) return {};
   try {
-    return JSON.parse(fs30.readFileSync(PLATFORM_CONFIG_PATH, "utf8"));
+    return JSON.parse(fs31.readFileSync(PLATFORM_CONFIG_PATH, "utf8"));
   } catch {
     return {};
   }
@@ -44659,8 +45623,8 @@ function updatePlatformConfig(patch) {
           const rawPath = sessionConfigPath(telegramId, meta.sessionId);
           let explicitSudo = [];
           try {
-            if (fs30.existsSync(rawPath)) {
-              const raw = JSON.parse(fs30.readFileSync(rawPath, "utf8"));
+            if (fs31.existsSync(rawPath)) {
+              const raw = JSON.parse(fs31.readFileSync(rawPath, "utf8"));
               explicitSudo = raw.sudoNumbers ?? [];
             }
           } catch {
@@ -44681,7 +45645,7 @@ function updatePlatformConfig(patch) {
       for (const meta of Object.values(loadAllSessions(telegramId))) {
         const metaPath = sessionMetaPath(telegramId, meta.sessionId);
         try {
-          const raw = JSON.parse(fs30.readFileSync(metaPath, "utf8"));
+          const raw = JSON.parse(fs31.readFileSync(metaPath, "utf8"));
           if (raw.linkCollectionEnabled === void 0) {
             saveSessionMeta({
               ...meta,
@@ -44747,11 +45711,11 @@ var init_workspace = __esm({
     init_builtin_owner_policy();
     init_session_lifecycle();
     execFileAsync4 = promisify4(execFile4);
-    __dirname3 = path27.dirname(fileURLToPath3(import.meta.url));
+    __dirname3 = path28.dirname(fileURLToPath3(import.meta.url));
     WORKSPACE_ROOT = (() => {
       const envRoot = process.env.WORKSPACE_ROOT ?? process.env.OMEGA_DATA_DIR;
-      if (envRoot) return path27.resolve(envRoot);
-      return path27.join(os3.homedir(), ".omega-v1", "workspaces");
+      if (envRoot) return path28.resolve(envRoot);
+      return path28.join(os3.homedir(), ".omega-v1", "workspaces");
     })();
     sessionOwnerIndex = /* @__PURE__ */ new Map();
     migrateLegacyWorkspaces();
@@ -44762,7 +45726,7 @@ var init_workspace = __esm({
     MAX_BUCKET_CACHE_ENTRIES = 2048;
     MAX_MERGE_ATTEMPTS = 3;
     MERGE_VALIDATION_LEASE_TTL_MS = 5 * 6e4;
-    PLATFORM_CONFIG_PATH = path27.join(WORKSPACE_ROOT, "_platform", "config.json");
+    PLATFORM_CONFIG_PATH = path28.join(WORKSPACE_ROOT, "_platform", "config.json");
   }
 });
 
@@ -44851,44 +45815,44 @@ import path35 from "path";
 
 // src/web/server.ts
 import express from "express";
-import fs32 from "fs";
-import path29 from "path";
+import fs33 from "fs";
+import path30 from "path";
 import { fileURLToPath as fileURLToPath4 } from "url";
 import multer from "multer";
 
 // src/web/auth.ts
 init_workspace();
-import crypto14 from "crypto";
-import fs31 from "fs";
-import path28 from "path";
-var AUTH_DIR = path28.join(WORKSPACE_ROOT, "_web_auth");
-var USERS_FILE = path28.join(AUTH_DIR, "users.json");
-var SESSIONS_FILE = path28.join(AUTH_DIR, "sessions.json");
+import crypto15 from "crypto";
+import fs32 from "fs";
+import path29 from "path";
+var AUTH_DIR = path29.join(WORKSPACE_ROOT, "_web_auth");
+var USERS_FILE = path29.join(AUTH_DIR, "users.json");
+var SESSIONS_FILE = path29.join(AUTH_DIR, "sessions.json");
 var ITERATIONS = 21e4;
 var KEYLEN = 32;
 var DIGEST = "sha512";
 function ensureStore() {
-  fs31.mkdirSync(AUTH_DIR, { recursive: true });
-  if (!fs31.existsSync(USERS_FILE)) fs31.writeFileSync(USERS_FILE, "{}");
-  if (!fs31.existsSync(SESSIONS_FILE)) fs31.writeFileSync(SESSIONS_FILE, "{}");
+  fs32.mkdirSync(AUTH_DIR, { recursive: true });
+  if (!fs32.existsSync(USERS_FILE)) fs32.writeFileSync(USERS_FILE, "{}");
+  if (!fs32.existsSync(SESSIONS_FILE)) fs32.writeFileSync(SESSIONS_FILE, "{}");
 }
 function readJson3(file, fallback) {
   ensureStore();
   try {
-    return JSON.parse(fs31.readFileSync(file, "utf8"));
+    return JSON.parse(fs32.readFileSync(file, "utf8"));
   } catch {
     return fallback;
   }
 }
 function writeJson(file, data) {
   ensureStore();
-  fs31.writeFileSync(file, JSON.stringify(data, null, 2));
+  fs32.writeFileSync(file, JSON.stringify(data, null, 2));
 }
 function userId(username) {
-  return `web_${crypto14.createHash("sha256").update(username.toLowerCase()).digest("hex").slice(0, 20)}`;
+  return `web_${crypto15.createHash("sha256").update(username.toLowerCase()).digest("hex").slice(0, 20)}`;
 }
-function hashPassword(password, salt = crypto14.randomBytes(16).toString("hex")) {
-  const passwordHash = crypto14.pbkdf2Sync(password, salt, ITERATIONS, KEYLEN, DIGEST).toString("hex");
+function hashPassword(password, salt = crypto15.randomBytes(16).toString("hex")) {
+  const passwordHash = crypto15.pbkdf2Sync(password, salt, ITERATIONS, KEYLEN, DIGEST).toString("hex");
   return { salt, passwordHash };
 }
 function createWebUser(username, password) {
@@ -44901,7 +45865,7 @@ function createWebUser(username, password) {
   const secret = hashPassword(password);
   users[clean4] = { id, username: clean4, ...secret, createdAt: Date.now() };
   writeJson(USERS_FILE, users);
-  fs31.mkdirSync(workspaceDir(id), { recursive: true });
+  fs32.mkdirSync(workspaceDir(id), { recursive: true });
   const { passwordHash, salt, ...safeUser } = users[clean4];
   void passwordHash;
   void salt;
@@ -44913,7 +45877,7 @@ function verifyWebUser(username, password) {
   const user = users[clean4];
   if (!user) return null;
   const attempted = hashPassword(password, user.salt).passwordHash;
-  const ok = crypto14.timingSafeEqual(Buffer.from(attempted, "hex"), Buffer.from(user.passwordHash, "hex"));
+  const ok = crypto15.timingSafeEqual(Buffer.from(attempted, "hex"), Buffer.from(user.passwordHash, "hex"));
   if (!ok) return null;
   user.lastLoginAt = Date.now();
   users[clean4] = user;
@@ -44924,7 +45888,7 @@ function verifyWebUser(username, password) {
   return safeUser;
 }
 function createSession(userIdValue) {
-  const token2 = crypto14.randomBytes(32).toString("base64url");
+  const token2 = crypto15.randomBytes(32).toString("base64url");
   const sessions2 = readJson3(SESSIONS_FILE, {});
   sessions2[token2] = { userId: userIdValue, expiresAt: Date.now() + 1e3 * 60 * 60 * 24 * 14 };
   writeJson(SESSIONS_FILE, sessions2);
@@ -45259,7 +46223,7 @@ init_session_health();
 init_auto_promote();
 
 // src/web/remote-session-api.ts
-import crypto15 from "crypto";
+import crypto16 from "crypto";
 var REMOTE_SESSION_STATUSES = /* @__PURE__ */ new Set([
   "ACTIVE",
   "DISCONNECTED",
@@ -45276,9 +46240,9 @@ function getRemoteApiConfig(env = process.env) {
 }
 function secureTokenEqual(actual, expected) {
   if (!actual || !expected) return false;
-  const actualHash = crypto15.createHash("sha256").update(actual).digest();
-  const expectedHash = crypto15.createHash("sha256").update(expected).digest();
-  return crypto15.timingSafeEqual(actualHash, expectedHash);
+  const actualHash = crypto16.createHash("sha256").update(actual).digest();
+  const expectedHash = crypto16.createHash("sha256").update(expected).digest();
+  return crypto16.timingSafeEqual(actualHash, expectedHash);
 }
 function bearerToken(authorizationHeader) {
   if (!authorizationHeader) return null;
@@ -45305,14 +46269,14 @@ function normalizeRemoteText(text2) {
 }
 
 // src/web/server.ts
-var __dirname4 = path29.dirname(fileURLToPath4(import.meta.url));
+var __dirname4 = path30.dirname(fileURLToPath4(import.meta.url));
 var botRef = null;
 function setBotReference(bot) {
   botRef = bot;
 }
-var bundledPublicDir = path29.resolve(__dirname4, "public");
-var sourcePublicDir = path29.resolve(__dirname4, "../public");
-var publicDir = fs32.existsSync(path29.join(bundledPublicDir, "index.html")) ? bundledPublicDir : sourcePublicDir;
+var bundledPublicDir = path30.resolve(__dirname4, "public");
+var sourcePublicDir = path30.resolve(__dirname4, "../public");
+var publicDir = fs33.existsSync(path30.join(bundledPublicDir, "index.html")) ? bundledPublicDir : sourcePublicDir;
 var logs = /* @__PURE__ */ new Map();
 var pairing = /* @__PURE__ */ new Map();
 var clients = /* @__PURE__ */ new Map();
@@ -46630,7 +47594,7 @@ function createWebApp() {
     const file = req.file;
     try {
       if (!file) throw new Error("A TXT, CSV, or JSON file is required");
-      const extension = path29.extname(file.originalname || "").toLowerCase();
+      const extension = path30.extname(file.originalname || "").toLowerCase();
       if (![".txt", ".csv", ".json"].includes(extension)) throw new Error("Only TXT, CSV, and JSON link files are supported");
       const result = importLinksToMainBucket(userId2, file.buffer.toString("utf8"));
       emit(userId2, `Uploaded ${file.originalname}: ${result.added} links added (${result.dupes} duplicates)`);
@@ -46717,9 +47681,9 @@ function createWebApp() {
     try {
       assertSessionOwner(userId2, sessionId);
       if (!file) throw new Error("Promotion media is required");
-      const extension = path29.extname(file.originalname || "").replace(/[^a-z0-9.]/giu, "").slice(0, 8) || ".bin";
-      storedPath = path29.join(promotionMediaDir(userId2), `${Date.now()}-${Math.random().toString(36).slice(2, 10)}${extension}`);
-      fs32.writeFileSync(storedPath, file.buffer, { mode: 384 });
+      const extension = path30.extname(file.originalname || "").replace(/[^a-z0-9.]/giu, "").slice(0, 8) || ".bin";
+      storedPath = path30.join(promotionMediaDir(userId2), `${Date.now()}-${Math.random().toString(36).slice(2, 10)}${extension}`);
+      fs33.writeFileSync(storedPath, file.buffer, { mode: 384 });
       const targetText = String(req.body?.targets ?? "");
       let targets = [];
       try {
@@ -46734,7 +47698,7 @@ function createWebApp() {
       emit(userId2, `Promotion campaign ${job.id} created with media`);
       res.json({ job: { ...job, content: { ...job.content, mediaPath: void 0 } } });
     } catch (err) {
-      if (storedPath) fs32.rmSync(storedPath, { force: true });
+      if (storedPath) fs33.rmSync(storedPath, { force: true });
       res.status(400).json({ error: err instanceof Error ? err.message : "Promotion media workflow failed" });
     }
   });
@@ -46746,9 +47710,9 @@ function createWebApp() {
     try {
       assertSessionOwner(userId2, sessionId);
       if (!file) throw new Error("Plugin file is required");
-      tempDir = fs32.mkdtempSync(path29.join("/tmp", "omega-plugin-"));
-      const source = path29.join(tempDir, file.originalname || "plugin");
-      fs32.writeFileSync(source, file.buffer, { mode: 384 });
+      tempDir = fs33.mkdtempSync(path30.join("/tmp", "omega-plugin-"));
+      const source = path30.join(tempDir, file.originalname || "plugin");
+      fs33.writeFileSync(source, file.buffer, { mode: 384 });
       const manifest = await pluginEngine.installFromFile(userId2, sessionId, source, { originalFileName: file.originalname, mimeType: file.mimetype, pluginId: String(req.body?.pluginId ?? "").trim() || void 0, enabled: req.body?.enabled !== "false" });
       emit(userId2, `Plugin ${manifest.id} installed on ${sessionId}`);
       const manifests = await pluginEngine.list(userId2, sessionId);
@@ -46756,7 +47720,7 @@ function createWebApp() {
     } catch (err) {
       res.status(400).json({ error: err instanceof Error ? err.message : "Plugin installation failed" });
     } finally {
-      if (tempDir) fs32.rmSync(tempDir, { recursive: true, force: true });
+      if (tempDir) fs33.rmSync(tempDir, { recursive: true, force: true });
     }
   });
   app.post("/api/sessions/:id/pfp", requireAuth, upload.single("image"), async (req, res) => {
@@ -47004,9 +47968,9 @@ ${message}`);
     const platform = String(req.body?.platform ?? "web").slice(0, 32);
     try {
       if (!text2 || text2.length > 4e3) throw new Error("Idea must be between 1 and 4000 characters");
-      const dir = path29.join(WORKSPACE_ROOT, userId2);
-      fs32.mkdirSync(dir, { recursive: true, mode: 448 });
-      fs32.appendFileSync(path29.join(dir, "web-ideas.jsonl"), `${JSON.stringify({ text: text2, platform, at: Date.now() })}
+      const dir = path30.join(WORKSPACE_ROOT, userId2);
+      fs33.mkdirSync(dir, { recursive: true, mode: 448 });
+      fs33.appendFileSync(path30.join(dir, "web-ideas.jsonl"), `${JSON.stringify({ text: text2, platform, at: Date.now() })}
 `, { mode: 384 });
       emit(userId2, "Idea saved for Omega product review");
       res.json({ ok: true });
@@ -47217,7 +48181,7 @@ ${message}`);
         }
       }
     }));
-    app.get("/{*path}", (_, res) => res.sendFile(path29.join(publicDir, "index.html")));
+    app.get("/{*path}", (_, res) => res.sendFile(path30.join(publicDir, "index.html")));
   } else {
     app.get("/", (_req, res) => res.status(404).json({ error: "Customer dashboard is not exposed." }));
   }
@@ -47239,507 +48203,17 @@ async function startWebServer() {
 // src/index.ts
 init_logger();
 init_queue();
-
-// src/services/workers/outreach-worker.ts
-init_queue();
-init_socket_manager();
-init_all_status();
-init_mass_outreach();
-init_status();
-init_logger();
-init_delay();
-init_ascii_art();
-init_broadcast_control();
-import { Worker as Worker2 } from "bullmq";
-var tgBot = null;
-function setOutreachBotRef(bot) {
-  tgBot = bot;
-}
-async function updateProgress(chatId, msgId, text2) {
-  if (!tgBot || !chatId) return;
-  try {
-    if (msgId) {
-      await tgBot.telegram.editMessageText(chatId, msgId, null, text2, { parse_mode: "HTML" });
-    } else {
-      await tgBot.telegram.sendMessage(chatId, text2, { parse_mode: "HTML" });
-    }
-  } catch {
-  }
-}
-async function waitForSocket(sessionId, maxWaitMs = 9e4) {
-  const deadline = Date.now() + maxWaitMs;
-  while (Date.now() < deadline) {
-    const socket = getSocket(sessionId);
-    if (socket) return socket;
-    await sleep(3e3);
-  }
-  return null;
-}
-async function sendWhatsAppTerminal(socket, jid, result, kind) {
-  if (!socket || !jid) return;
-  const sent = result.sent ?? result.success;
-  const title2 = result.lifecycle === "CANCELLED" ? `${kind} CANCELLED` : sent > 0 && result.failed === 0 ? `${kind} COMPLETE` : sent > 0 ? `${kind} PARTIAL` : `${kind} FAILED`;
-  const body = result.lifecycle === "CANCELLED" ? asciiBox({ title: title2, emoji: "\u{1F6D1}", rows: [["Sent", String(sent)], ["Failed", String(result.failed)], ["Skipped", String(result.skipped)]], footer: result.lastError ?? "StopSpam cancelled this session job." }) : sent <= 0 ? errorCard(`${kind} FAILED`, `No message was accepted. Failed: ${result.failed}; skipped: ${result.skipped}.`) : asciiBox({
-    title: title2,
-    emoji: title2.endsWith("COMPLETE") ? "\u2705" : "\u26A0\uFE0F",
-    rows: [["Sent", String(sent)], ["Failed", String(result.failed)], ["Skipped", String(result.skipped)]],
-    footer: "Durable worker finished this session job."
-  });
-  await socket.sendMessage(jid, { text: body }).catch(() => {
-  });
-}
-async function processOutreach(job) {
-  const { telegramId, workspaceId, sessionId, generation, type, data, chatId, messageId, waChatJid } = job.data;
-  const controlOwner = workspaceId ?? telegramId;
-  if (!await isBroadcastGenerationCurrent(controlOwner, sessionId, generation)) {
-    const cancelled = {
-      success: 0,
-      failed: 0,
-      skipped: 0,
-      rateLimited: 0,
-      details: ["CANCELLED: job generation is stale"],
-      duration: 0,
-      lifecycle: "CANCELLED",
-      remaining: 0,
-      sent: 0,
-      attempted: 0,
-      lastError: "STOPSPAM_GENERATION_INVALID"
-    };
-    const currentSocket = getSocket(sessionId);
-    await sendWhatsAppTerminal(currentSocket, waChatJid, cancelled, type === "allchat" ? "ALLCHAT" : "ALLSTATUS");
-    return cancelled;
-  }
-  const socket = await waitForSocket(sessionId);
-  if (!socket) {
-    logger.warn(`[OutreachWorker] No socket for ${sessionId} after wait \u2014 requeueing`);
-    throw new Error(`Session ${sessionId} not available \u2014 will retry`);
-  }
-  const onProgress = async (msg) => {
-    await job.updateProgress(msg);
-    await updateProgress(chatId, messageId, msg);
-  };
-  const text2 = data.text ?? "";
-  let result;
-  switch (type) {
-    case "allstatus":
-      result = await cmdAllStatus(socket, sessionId, telegramId, text2, {
-        mediaBuffer: data.mediaBuffer ? Buffer.from(data.mediaBuffer, "base64") : void 0,
-        mediaType: data.mediaType,
-        onProgress,
-        isCancelled: () => isBroadcastGenerationCurrent(controlOwner, sessionId, generation).then((current) => !current)
-      });
-      break;
-    case "allchat":
-      result = await cmdAllChat(socket, sessionId, telegramId, text2, {
-        mediaBuffer: data.mediaBuffer ? Buffer.from(data.mediaBuffer, "base64") : void 0,
-        mediaType: data.mediaType,
-        onProgress,
-        isCancelled: () => isBroadcastGenerationCurrent(controlOwner, sessionId, generation).then((current) => !current)
-      });
-      break;
-    case "tochatx": {
-      const target = data.target;
-      const count = data.count ?? 1;
-      const toChatResult = await cmdToChatX(socket, telegramId, sessionId, target, count, text2);
-      await onProgress(`\u2705 Sent ${toChatResult.sent}/${count} to ${target}`);
-      result = { success: toChatResult.sent, failed: toChatResult.failed, skipped: 0, rateLimited: 0, details: [], duration: 0 };
-      break;
-    }
-    default:
-      result = { success: 0, failed: 0, skipped: 0, rateLimited: 0, details: [`Unknown type: ${type}`], duration: 0 };
-      break;
-  }
-  if (type === "allchat" || type === "allstatus") {
-    await sendWhatsAppTerminal(socket, waChatJid, result, type === "allchat" ? "ALLCHAT" : "ALLSTATUS");
-  }
-  return result;
-}
-function createOutreachWorker() {
-  const worker = new Worker2(
-    QUEUE_NAMES.OUTREACH,
-    processOutreach,
-    {
-      connection: getRedis(),
-      concurrency: 1,
-      limiter: { max: 5, duration: 6e4 },
-      stalledInterval: 3e4,
-      // check for stalled jobs every 30s
-      maxStalledCount: 3
-      // retry stalled jobs up to 3 times before failing
-    }
-  );
-  registerWorker(worker);
-  logger.info("[OutreachWorker] Started");
-  return worker;
-}
-var outreachFactoryRegistered = false;
-function startOutreachWorker() {
-  if (!outreachFactoryRegistered) {
-    registerWorkerFactory(createOutreachWorker);
-    outreachFactoryRegistered = true;
-  }
-  return createOutreachWorker();
-}
-
-// src/services/workers/lifecycle-worker.ts
-init_queue();
-init_socket_manager();
-init_lifecycle();
-init_workspace();
-init_logger();
-init_delay();
-import { Worker as Worker3 } from "bullmq";
-var tgBot2 = null;
-function setLifecycleBotRef(bot) {
-  tgBot2 = bot;
-}
-async function waitForSocket2(sessionId, maxWaitMs = 9e4) {
-  const deadline = Date.now() + maxWaitMs;
-  while (Date.now() < deadline) {
-    const socket = getSocket(sessionId);
-    if (socket) return socket;
-    await sleep(3e3);
-  }
-  return null;
-}
-async function processLifecycle(job) {
-  const { telegramId, sessionId, type, chatId } = job.data;
-  const socket = await waitForSocket2(sessionId);
-  if (!socket) {
-    throw new Error(`Session ${sessionId} not available \u2014 will retry`);
-  }
-  const onProgress = async (msg) => {
-    await job.updateProgress(msg);
-    if (tgBot2 && chatId) {
-      try {
-        await tgBot2.telegram.sendMessage(chatId, msg, { parse_mode: "HTML" });
-      } catch {
-      }
-    }
-  };
-  switch (type) {
-    case "joinall": {
-      const links = loadBucket(telegramId, "active").map((e) => e.link);
-      return cmdJoinAll(socket, sessionId, telegramId, links, { onProgress });
-    }
-    case "leaveall": {
-      return cmdLeaveAll(socket, sessionId, telegramId, { onProgress });
-    }
-    default:
-      return { success: 0, failed: 0, skipped: 0, rateLimited: 0, details: [`Unknown: ${type}`], duration: 0 };
-  }
-}
-function createLifecycleWorker() {
-  const worker = new Worker3(
-    QUEUE_NAMES.LIFECYCLE,
-    processLifecycle,
-    {
-      connection: getRedis(),
-      concurrency: 1,
-      limiter: { max: 3, duration: 6e4 },
-      stalledInterval: 3e4,
-      maxStalledCount: 3
-    }
-  );
-  registerWorker(worker);
-  logger.info("[LifecycleWorker] Started");
-  return worker;
-}
-var lifecycleFactoryRegistered = false;
-function startLifecycleWorker() {
-  if (!lifecycleFactoryRegistered) {
-    registerWorkerFactory(createLifecycleWorker);
-    lifecycleFactoryRegistered = true;
-  }
-  return createLifecycleWorker();
-}
-
-// src/services/workers/omni-worker.ts
-init_queue();
-init_socket_manager();
-init_logger();
-init_delay();
-init_PreviewDispatcher();
-import { Worker as Worker4 } from "bullmq";
-async function processOmni(job) {
-  const { data } = job.data;
-  const command = data.command;
-  const text2 = data.text ?? "";
-  const start = Date.now();
-  const result = {
-    success: 0,
-    failed: 0,
-    skipped: 0,
-    rateLimited: 0,
-    details: [],
-    duration: 0
-  };
-  const sockets = getAllSockets();
-  for (const [sessionId, handle] of sockets.entries()) {
-    if (handle.frozen) {
-      result.skipped++;
-      continue;
-    }
-    try {
-      switch (command) {
-        case "broadcast": {
-          const groups = await handle.socket.groupFetchAllParticipating();
-          const jids = Object.values(groups).slice(0, 5).map((g) => g.id);
-          const { success: success2, failed } = await PreviewDispatcher.broadcast(
-            handle.socket,
-            jids,
-            text2
-          );
-          result.success += success2;
-          result.failed += failed;
-          break;
-        }
-        case "status": {
-          const { success: success2 } = await PreviewDispatcher.send(
-            handle.socket,
-            "status@broadcast",
-            text2
-          );
-          if (success2) result.success++;
-          else result.failed++;
-          break;
-        }
-        default:
-          result.skipped++;
-      }
-      result.details.push(`\u2705 ${sessionId}`);
-    } catch (err) {
-      result.failed++;
-      result.details.push(`\u274C ${sessionId}: ${String(err).slice(0, 40)}`);
-    }
-    await jitter(500, 1e3);
-  }
-  result.duration = Date.now() - start;
-  logger.info("[OmniWorker] Omni command complete", result);
-  return result;
-}
-function createOmniWorker() {
-  const worker = new Worker4(
-    QUEUE_NAMES.OMNI,
-    processOmni,
-    {
-      connection: getRedis(),
-      concurrency: 1,
-      limiter: { max: 2, duration: 6e4 }
-    }
-  );
-  registerWorker(worker);
-  logger.info("[OmniWorker] Started");
-  return worker;
-}
-var omniFactoryRegistered = false;
-function startOmniWorker() {
-  if (!omniFactoryRegistered) {
-    registerWorkerFactory(createOmniWorker);
-    omniFactoryRegistered = true;
-  }
-  return createOmniWorker();
-}
-
-// src/services/workers/allstatus-worker.ts
-init_queue();
-init_socket_manager();
-init_all_status();
-init_logger();
-init_workspace();
-init_ascii_art();
-init_delay();
-init_broadcast_control();
-init_session_health();
-import { Worker as Worker5 } from "bullmq";
-var tgBot3 = null;
-function setAllStatusBotRef(bot) {
-  tgBot3 = bot;
-}
-async function sendWhatsAppTerminal2(socket, jid, result) {
-  if (!socket || !jid) return;
-  const sent = result.sent ?? result.success;
-  const title2 = result.lifecycle === "COMPLETED" ? "BROADCAST COMPLETE" : result.lifecycle === "CANCELLED" ? "BROADCAST CANCELLED" : sent > 0 ? "BROADCAST PARTIAL" : "BROADCAST FAILED";
-  const body = title2 === "BROADCAST FAILED" ? errorCard("BROADCAST FAILED", `No confirmed status was sent. Failed: ${result.failed}; skipped: ${result.skipped}.`) : asciiBox({
-    title: title2,
-    emoji: title2 === "BROADCAST COMPLETE" ? "\u2705" : title2 === "BROADCAST CANCELLED" ? "\u{1F6D1}" : "\u26A0\uFE0F",
-    rows: [
-      ["Groups", String(result.totalGroups ?? 0)],
-      ["Sent", String(sent)],
-      ["Failed", String(result.failed)],
-      ["Skipped", String(result.skipped)],
-      ["Remaining", String(result.remaining ?? 0)]
-    ],
-    footer: result.lastError ? result.lastError.slice(0, 120) : "Durable worker finished this session job."
-  });
-  await socket.sendMessage(jid, { text: body }).catch(() => {
-  });
-}
-async function waitForSessionSocket(sessionId, maxWaitMs = 9e4) {
-  const initialHealth = getSessionHealth(sessionId);
-  if (initialHealth && !["CONNECTED", "HEALTHY", "DEGRADED"].includes(initialHealth.state)) return null;
-  const deadline = Date.now() + maxWaitMs;
-  while (Date.now() < deadline) {
-    const socket = getSocket(sessionId);
-    if (socket) return socket;
-    await sleep(3e3);
-  }
-  return null;
-}
-var sessionBroadcastLocks = /* @__PURE__ */ new Map();
-async function withSessionBroadcastLock(sessionId, work) {
-  const previous = sessionBroadcastLocks.get(sessionId) ?? Promise.resolve();
-  let release;
-  const current = new Promise((resolve) => {
-    release = resolve;
-  });
-  sessionBroadcastLocks.set(sessionId, current);
-  await previous.catch(() => void 0);
-  try {
-    return await work();
-  } finally {
-    release();
-    if (sessionBroadcastLocks.get(sessionId) === current) sessionBroadcastLocks.delete(sessionId);
-  }
-}
-async function processAllStatus(job) {
-  const { telegramId, workspaceId, sessionId, generation, data, chatId, messageId, waChatJid } = job.data;
-  const controlOwner = workspaceId ?? telegramId;
-  if (!await isBroadcastGenerationCurrent(controlOwner, sessionId, generation)) {
-    return {
-      success: 0,
-      failed: 0,
-      skipped: 0,
-      rateLimited: 0,
-      details: ["CANCELLED: job generation is stale"],
-      duration: 0,
-      lifecycle: "CANCELLED",
-      remaining: 0,
-      sent: 0,
-      attempted: 0,
-      prepared: 0,
-      lastError: "STOPSPAM_GENERATION_INVALID"
-    };
-  }
-  const meta = loadSessionMeta(telegramId, sessionId);
-  if (!meta || meta.sessionId !== sessionId || meta.telegramId !== telegramId) {
-    throw new Error(`SESSION_CONTEXT_INVALID:${sessionId}`);
-  }
-  const socket = await waitForSessionSocket(sessionId);
-  if (!socket) {
-    const health = getSessionHealth(sessionId);
-    const lifecycle = meta.status === "LOGGED_OUT" || health?.state === "LOGGED_OUT" ? "LOGGED_OUT" : "WAITING_FOR_SESSION";
-    const now3 = Date.now();
-    await job.updateProgress({ sessionId, state: lifecycle, detail: "Session recovery is in progress; job will retry automatically.", at: now3 });
-    if (lifecycle === "WAITING_FOR_SESSION") {
-      throw new Error(`WAITING_FOR_SESSION:${sessionId}`);
-    }
-    return {
-      success: 0,
-      failed: 0,
-      skipped: 0,
-      rateLimited: 0,
-      details: [`${lifecycle}: session is unavailable`],
-      duration: 0,
-      totalGroups: 0,
-      prepared: 0,
-      attempted: 0,
-      sent: 0,
-      remaining: 0,
-      lifecycle,
-      lastError: lifecycle,
-      telemetry: [{ state: "QUEUED", at: now3 }, { state: lifecycle, at: now3 }]
-    };
-  }
-  const telegramIntervalMs = Math.max(1e3, Number.parseInt(process.env.ALLSTATUS_TELEGRAM_PROGRESS_MS ?? "2000", 10) || 2e3);
-  let lastTelegramAt = 0;
-  let pendingTelegramText = "";
-  let telegramTimer;
-  const flushTelegram = async () => {
-    if (!tgBot3 || !chatId || !messageId || !pendingTelegramText) return;
-    const text2 = pendingTelegramText;
-    pendingTelegramText = "";
-    lastTelegramAt = Date.now();
-    await tgBot3.telegram.editMessageText(chatId, messageId, null, text2, { parse_mode: "HTML" }).catch(() => {
-    });
-  };
-  const onProgress = async (text2) => {
-    const at = Date.now();
-    await job.updateProgress({ sessionId, state: "RUNNING", text: text2, at, lastProgressAt: at });
-    pendingTelegramText = text2;
-    if (tgBot3 && chatId && messageId && at - lastTelegramAt >= telegramIntervalMs) {
-      await flushTelegram();
-    } else if (!telegramTimer) {
-      telegramTimer = setTimeout(() => {
-        telegramTimer = void 0;
-        void flushTelegram();
-      }, telegramIntervalMs);
-      telegramTimer.unref?.();
-    }
-    logger.debug("[AllStatusWorker] progress", { jobId: job.id, sessionId, chatId, messageId, text: text2.slice(0, 120) });
-  };
-  const result = await withSessionBroadcastLock(sessionId, () => cmdAllStatus(socket, sessionId, telegramId, String(data.text ?? ""), {
-    mediaBuffer: data.mediaBuffer ? Buffer.from(data.mediaBuffer, "base64") : void 0,
-    mediaType: data.mediaType,
-    caption: data.caption,
-    mimeType: data.mimeType,
-    ptt: Boolean(data.ptt),
-    broadcastId: String(job.id ?? `allstatus-${sessionId}`),
-    durableIdempotency: true,
-    onProgress,
-    isCancelled: () => isBroadcastGenerationCurrent(controlOwner, sessionId, generation).then((current) => !current)
-  }));
-  if (telegramTimer) clearTimeout(telegramTimer);
-  await flushTelegram();
-  await sendWhatsAppTerminal2(socket, waChatJid, result);
-  return result;
-}
-function startWorker(queueName, label, concurrency) {
-  const worker = new Worker5(
-    queueName,
-    processAllStatus,
-    {
-      connection: getRedis(),
-      concurrency,
-      limiter: {
-        max: Math.max(4, Number.parseInt(process.env.ALLSTATUS_RATE_LIMIT_MAX ?? "30", 10) || 30),
-        duration: 6e4
-      },
-      lockDuration: Math.max(12e4, Number.parseInt(process.env.ALLSTATUS_LOCK_DURATION_MS ?? "1200000", 10) || 12e5),
-      lockRenewTime: Math.max(3e4, Number.parseInt(process.env.ALLSTATUS_LOCK_RENEW_MS ?? "300000", 10) || 3e5),
-      stalledInterval: 3e4,
-      maxStalledCount: 2
-    }
-  );
-  registerWorker(worker);
-  logger.info("[AllStatusWorker] Started", { queue: queueName, class: label, concurrency });
-  return worker;
-}
-function createAllStatusWorkers() {
-  const manualConcurrency = Math.max(1, Number.parseInt(process.env.ALLSTATUS_MANUAL_WORKERS ?? "2", 10) || 2);
-  const autoPromoteConcurrency = Math.max(1, Number.parseInt(process.env.ALLSTATUS_AUTOPROMOTE_WORKERS ?? "1", 10) || 1);
-  const legacyConcurrency = Math.max(1, Number.parseInt(process.env.ALLSTATUS_LEGACY_WORKERS ?? "1", 10) || 1);
-  return [
-    startWorker(QUEUE_NAMES.ALLSTATUS_MANUAL, "manual", manualConcurrency),
-    startWorker(QUEUE_NAMES.ALLSTATUS_AUTOPROMOTE, "autopromote", autoPromoteConcurrency),
-    startWorker(QUEUE_NAMES.ALLSTATUS, "legacy", legacyConcurrency)
-  ];
-}
-var allStatusFactoryRegistered = false;
-function startAllStatusWorker() {
-  if (!allStatusFactoryRegistered) {
-    registerWorkerFactory(createAllStatusWorkers);
-    allStatusFactoryRegistered = true;
-  }
-  return createAllStatusWorkers();
-}
+init_outreach_worker();
+init_lifecycle_worker();
+init_omni_worker();
+init_allstatus_worker();
 
 // src/services/session-cleaner.ts
 init_logger();
 init_workspace();
 init_socket_manager();
-import fs33 from "fs";
-import path30 from "path";
+import fs34 from "fs";
+import path31 from "path";
 var CLEANUP_INTERVAL_MS = 5 * 60 * 1e3;
 var PAIRING_TIMEOUT_MS = 10 * 60 * 1e3;
 var SYSTEM_FREEZE_TTL_MS = 24 * 60 * 60 * 1e3;
@@ -47771,7 +48245,7 @@ async function runSessionCleanup() {
         reason = "Marked as purged";
       }
       if (status === "FROZEN") {
-        const hasCreds = fs33.existsSync(path30.join(sessionAuthDir(telegramId, sessionId), "creds.json"));
+        const hasCreds = fs34.existsSync(path31.join(sessionAuthDir(telegramId, sessionId), "creds.json"));
         const freezeAge = Date.now() - (meta.freezeAt ?? meta.lastSeen ?? Date.now());
         if (freezeAge > SYSTEM_FREEZE_TTL_MS && !hasCreds) {
           logger.warn("[SessionCleaner] Frozen orphan candidate (report-only)", {
@@ -47784,7 +48258,7 @@ async function runSessionCleanup() {
       }
       if (status === "ACTIVE") {
         const authDir = sessionAuthDir(telegramId, sessionId);
-        if (!fs33.existsSync(path30.join(authDir, "creds.json"))) {
+        if (!fs34.existsSync(path31.join(authDir, "creds.json"))) {
           logger.warn(
             `[SessionCleaner] ACTIVE session ${sessionId} is missing creds.json \u2014 NOT purging (Baileys will handle this via auth error). Investigate if this persists.`
           );
@@ -47829,6 +48303,8 @@ init_bot();
 init_workspace();
 init_release_publisher();
 init_group_security_engine();
+init_outreach_worker();
+init_lifecycle_worker();
 init_auto_promote();
 init_smart_promotion();
 init_socket_manager();
@@ -47843,10 +48319,10 @@ init_session_health();
 // src/services/runtime-lease.ts
 init_workspace();
 init_logger();
-import fs34 from "node:fs";
+import fs35 from "node:fs";
 import os4 from "node:os";
-import path31 from "node:path";
-var leasePath = path31.join(WORKSPACE_ROOT, ".omega-runtime-lease.json");
+import path32 from "node:path";
+var leasePath = path32.join(WORKSPACE_ROOT, ".omega-runtime-lease.json");
 var LEASE_STALE_MS = Math.max(3e4, Number.parseInt(process.env.OMEGA_RUNTIME_LEASE_STALE_MS ?? "45_000", 10) || 45e3);
 var heartbeatTimer;
 var owned = false;
@@ -47864,14 +48340,14 @@ function staleHeartbeat(existing) {
 }
 function readLease() {
   try {
-    return JSON.parse(fs34.readFileSync(leasePath, "utf8"));
+    return JSON.parse(fs35.readFileSync(leasePath, "utf8"));
   } catch {
     return void 0;
   }
 }
 function pidState(pid) {
   try {
-    const stat = fs34.readFileSync(`/proc/${pid}/stat`, "utf8");
+    const stat = fs35.readFileSync(`/proc/${pid}/stat`, "utf8");
     const close = stat.lastIndexOf(")");
     return close >= 0 ? stat.slice(close + 2).trimStart()[0] : void 0;
   } catch {
@@ -47890,14 +48366,14 @@ function pidAlive(pid) {
   }
 }
 function writeLease(lease) {
-  fs34.mkdirSync(WORKSPACE_ROOT, { recursive: true, mode: 448 });
+  fs35.mkdirSync(WORKSPACE_ROOT, { recursive: true, mode: 448 });
   const temp = `${leasePath}.${process.pid}.tmp`;
-  fs34.writeFileSync(temp, JSON.stringify(lease), { mode: 384 });
-  fs34.renameSync(temp, leasePath);
+  fs35.writeFileSync(temp, JSON.stringify(lease), { mode: 384 });
+  fs35.renameSync(temp, leasePath);
 }
 function acquireRuntimeLease() {
   if (owned) return;
-  fs34.mkdirSync(WORKSPACE_ROOT, { recursive: true, mode: 448 });
+  fs35.mkdirSync(WORKSPACE_ROOT, { recursive: true, mode: 448 });
   const existing = readLease();
   if (existing && existing.pid !== process.pid && pidAlive(existing.pid)) {
     if (sameHostCustomerTakeoverAllowed(existing)) {
@@ -47934,7 +48410,7 @@ function acquireRuntimeLease() {
   if (existing) {
     logger.warn("[RuntimeLease] Removing stale runtime lease", { pid: existing.pid, role: existing.role });
     try {
-      fs34.unlinkSync(leasePath);
+      fs35.unlinkSync(leasePath);
     } catch {
     }
   }
@@ -47968,7 +48444,7 @@ function releaseRuntimeLease() {
   const current = readLease();
   if (current?.pid === process.pid) {
     try {
-      fs34.unlinkSync(leasePath);
+      fs35.unlinkSync(leasePath);
     } catch {
     }
   }
@@ -48096,312 +48572,8 @@ var inboundAdmissionConfig = {
   maxPending: MAX_PENDING
 };
 
-// src/runtime/pterodactyl-client-bridge.ts
-init_all_status();
-init_socket_manager();
-init_session_health();
-init_workspace();
-init_join_manager();
-init_logger();
-init_queue();
-import {
-  ClientRuntime,
-  MonolithWorkloadAdapter
-} from "@omega/client/library";
-import crypto16 from "node:crypto";
-import fs35 from "node:fs";
-import path32 from "node:path";
-var runtime;
-var customerTelegramSender;
-var scheduledUpdateBuildId;
-var updateRestartTimer;
-function scheduleCustomerRuntimeUpdate(release) {
-  if (process.env.OMEGA_CUSTOMER_RUNTIME !== "true" && process.env.OMEGA_RUNTIME_ROLE !== "customer") return;
-  if (process.env.OMEGA_AUTO_UPDATE === "false" || release.buildId === scheduledUpdateBuildId) return;
-  const currentVersion = process.env.OMEGA_RUNTIME_VERSION?.trim();
-  if (!currentVersion) {
-    logger.warn("[PterodactylAdapter] Runtime version is unknown; refusing automatic restart until the packaged version is detected");
-    return;
-  }
-  if (currentVersion === release.version) return;
-  scheduledUpdateBuildId = release.buildId;
-  logger.info("[PterodactylAdapter] Verified runtime update available; scheduling graceful panel restart", {
-    version: release.version,
-    buildId: release.buildId
-  });
-  updateRestartTimer = setTimeout(() => {
-    updateRestartTimer = void 0;
-    if (process.env.OMEGA_SHUTTING_DOWN === "true") return;
-    process.env.OMEGA_SHUTTING_DOWN = "true";
-    logger.info("[PterodactylAdapter] Handing restart to panel supervisor for runtime update", { version: release.version });
-    process.kill(process.pid, "SIGTERM");
-  }, Math.max(1e3, Number.parseInt(process.env.OMEGA_UPDATE_GRACE_MS ?? "5000", 10) || 5e3));
-  updateRestartTimer.unref?.();
-}
-function setCustomerTelegramSender(sender) {
-  customerTelegramSender = sender;
-}
-function iso(value, fallback = (/* @__PURE__ */ new Date()).toISOString()) {
-  if (typeof value === "number" && Number.isFinite(value)) return new Date(value).toISOString();
-  if (typeof value === "string" && !Number.isNaN(Date.parse(value))) return new Date(value).toISOString();
-  return fallback;
-}
-function sourceFor(workspaceId, deploymentId) {
-  const knownJobStatuses = /* @__PURE__ */ new Map();
-  const pendingJobEvents = [];
-  const completedControls = /* @__PURE__ */ new Map();
-  const queueJobTransition = (job) => {
-    const previous = knownJobStatuses.get(job.jobId);
-    const next = job.status.toUpperCase();
-    knownJobStatuses.set(job.jobId, next);
-    let kind;
-    if (!previous) kind = "JOB_CREATED";
-    else if (previous === next) return;
-    else if (["STARTING", "PROCESSING", "RUNNING"].includes(next)) kind = "JOB_STARTED";
-    else if (["COMPLETED"].includes(next)) kind = "JOB_COMPLETED";
-    else if (["FAILED"].includes(next)) kind = "JOB_FAILED";
-    else if (["STOPPED", "CANCELLED"].includes(next)) kind = "JOB_CANCELLED";
-    else if (["RATE_LIMITED", "SESSION_UNAVAILABLE", "RECONNECTING"].includes(next)) kind = "JOB_RECOVERING";
-    else kind = "JOB_PROGRESS";
-    if (pendingJobEvents.length >= 100) pendingJobEvents.shift();
-    pendingJobEvents.push({
-      kind,
-      deploymentId: job.deploymentId,
-      workspaceId: job.workspaceId,
-      jobId: job.jobId,
-      type: job.type,
-      ...job.sessionId ? { sessionId: job.sessionId } : {},
-      ...job.generation === void 0 ? {} : { generation: job.generation },
-      owner: job.owner,
-      at: (/* @__PURE__ */ new Date()).toISOString(),
-      ...job.progress ? { progress: job.progress } : {},
-      ...job.errorCode || job.errorMessage ? { error: { code: job.errorCode ?? "LOCAL_JOB_FAILED", message: (job.errorMessage ?? "Local job failed.").slice(0, 240) } } : {}
-    });
-  };
-  return {
-    listSessions() {
-      return loadAllSessionsGlobally().map(({ meta }) => {
-        const health = getSessionHealth(meta.sessionId);
-        const healthState = health?.state;
-        const socketReady = Boolean(getSocket(meta.sessionId));
-        const status = healthState === "RECONNECTING" ? "RECONNECTING" : healthState === "DEGRADED" || healthState === "UNHEALTHY" ? "DEGRADED" : meta.status === "ACTIVE" && !socketReady ? "CONNECTING" : meta.status;
-        return {
-          sessionId: meta.sessionId,
-          workspaceId,
-          status,
-          generation: getSocketGeneration(meta.sessionId),
-          ...socketReady && (healthState === "CONNECTED" || healthState === "HEALTHY") ? { connectedAt: iso(health?.lastConnectionEventAt, iso(meta.pairedAt)) } : {},
-          ...health?.lastError ? { lastErrorCode: "SESSION_TRANSPORT_ERROR" } : {}
-        };
-      });
-    },
-    listJobs() {
-      const jobs = [];
-      for (const { telegramId, meta } of loadAllSessionsGlobally()) {
-        const joinJob = getJoinManagerJob(telegramId, meta.sessionId);
-        if (joinJob && typeof joinJob.id === "string") {
-          jobs.push({
-            deploymentId,
-            workspaceId,
-            sessionId: meta.sessionId,
-            jobId: joinJob.id,
-            type: "join-manager",
-            status: typeof joinJob.status === "string" ? joinJob.status : "FAILED",
-            generation: getSocketGeneration(meta.sessionId),
-            owner: workspaceId,
-            ...joinJob.startedAt ? { startedAt: iso(joinJob.startedAt) } : {},
-            updatedAt: iso(joinJob.updatedAt ?? joinJob.createdAt),
-            ...typeof joinJob.lastError === "string" ? { errorCode: "JOIN_MANAGER_ERROR", errorMessage: joinJob.lastError } : {}
-          });
-        }
-        for (const run of getAllStatusRunSnapshot(meta.sessionId)) {
-          jobs.push({
-            deploymentId,
-            workspaceId,
-            sessionId: meta.sessionId,
-            jobId: `allstatus:${run.broadcastId}`,
-            type: "allstatus",
-            status: run.cancelled ? "CANCELLED" : "RUNNING",
-            generation: getSocketGeneration(meta.sessionId),
-            owner: workspaceId,
-            startedAt: iso(run.startedAt),
-            updatedAt: (/* @__PURE__ */ new Date()).toISOString()
-          });
-        }
-      }
-      for (const job of jobs) queueJobTransition(job);
-      return jobs;
-    },
-    drainJobEvents() {
-      return pendingJobEvents.splice(0, 50);
-    },
-    async executeControl(request) {
-      const prior = completedControls.get(request.requestId) ?? completedControls.get(request.jobId);
-      if (prior) return { ...prior, status: "DUPLICATE", at: (/* @__PURE__ */ new Date()).toISOString() };
-      const base = { requestId: request.requestId, jobId: request.jobId, deploymentId: request.deploymentId, workspaceId: request.workspaceId };
-      if (request.deploymentId !== deploymentId || request.workspaceId !== workspaceId) {
-        return { ...base, status: "REJECTED", at: (/* @__PURE__ */ new Date()).toISOString(), error: { code: "CONTROL_OWNERSHIP_MISMATCH", message: "Control request is outside the active installation scope." } };
-      }
-      if (request.sessionId && request.generation !== void 0 && request.generation !== getSocketGeneration(request.sessionId)) {
-        return { ...base, status: "REJECTED", at: (/* @__PURE__ */ new Date()).toISOString(), error: { code: "STALE_SESSION_GENERATION", message: "The requested session generation is no longer current." } };
-      }
-      let result;
-      try {
-        if (request.action === "POLICY_SYNC") {
-          const policy = request.payload?.policy ?? {};
-          const patch = {
-            ...typeof policy.statusDesignEnabled === "boolean" ? { statusDesignEnabled: policy.statusDesignEnabled } : {},
-            ...typeof policy.statusDesignTheme === "string" && policy.statusDesignTheme.trim() ? { statusDesignTheme: policy.statusDesignTheme.trim().slice(0, 80) } : {}
-          };
-          if (Object.keys(patch).length === 0) throw new Error("Parent policy payload is empty.");
-          let applied = 0;
-          for (const { telegramId, meta } of loadAllSessionsGlobally()) {
-            updateSessionConfig(telegramId, meta.sessionId, patch);
-            applied += 1;
-          }
-          result = { ...base, status: "COMPLETED", at: (/* @__PURE__ */ new Date()).toISOString(), result: { jobId: request.jobId, state: "SYNCED", message: `Parent policy applied to ${applied} local session${applied === 1 ? "" : "s"}.` } };
-        } else if (request.action === "FORCE_JOIN_SET" || request.action === "FORCE_JOIN_CLEAR") {
-          const policy = request.action === "FORCE_JOIN_CLEAR" ? void 0 : request.payload?.forceJoin;
-          const targets = policy?.enabled ? [...new Set([policy.channel, policy.groupId].filter((value) => Boolean(value && value.trim())))] : [];
-          const customerRuntime = process.env.OMEGA_CUSTOMER_RUNTIME === "true" || process.env.OMEGA_RUNTIME_ROLE === "customer";
-          const ownerScope = process.env.TELEGRAM_OWNER_ID?.trim() || (customerRuntime ? "" : "8831887192");
-          if (ownerScope) updateConfig(ownerScope, { forceJoinTargets: targets });
-          result = { ...base, status: "COMPLETED", at: (/* @__PURE__ */ new Date()).toISOString(), result: { jobId: request.jobId, state: policy?.enabled ? "ENABLED" : "DISABLED", message: `Force Join ${policy?.enabled ? "policy applied" : "policy cleared"} locally.` } };
-        } else if (request.action === "BROADCAST_DISPATCH") {
-          const broadcast = request.payload?.broadcast;
-          if (!broadcast?.text?.trim()) throw new Error("Broadcast text is empty.");
-          if (!customerTelegramSender) throw new Error("Customer Telegram delivery is unavailable.");
-          const ownerId = Number(process.env.TELEGRAM_OWNER_ID?.trim() || "");
-          const recipientIds = broadcast.target === "owner" ? Number.isSafeInteger(ownerId) && ownerId > 0 ? [ownerId] : [] : getAllUserIds().map((id) => Number(id)).filter((id) => Number.isSafeInteger(id) && id > 0);
-          if (recipientIds.length === 0) throw new Error(broadcast.target === "owner" ? "Customer Telegram owner is not configured." : "No registered Telegram users are available.");
-          const deliveries = await Promise.allSettled(recipientIds.map((chatId) => customerTelegramSender(chatId, broadcast.text.slice(0, 3800), broadcast.parseMode ?? "HTML")));
-          const delivered = deliveries.filter((delivery) => delivery.status === "fulfilled").length;
-          if (delivered === 0) throw new Error("Customer Telegram delivery failed for every recipient.");
-          result = { ...base, status: "COMPLETED", at: (/* @__PURE__ */ new Date()).toISOString(), result: { jobId: request.jobId, state: "DELIVERED", message: `Parent broadcast delivered to ${delivered}/${recipientIds.length} Telegram user${recipientIds.length === 1 ? "" : "s"}.` } };
-        } else {
-          if (!request.sessionId) throw new Error("A session is required for this control action.");
-          if (request.action === "JOIN_START" && !getSocket(request.sessionId)) throw new Error("The requested session is not operational.");
-          if (request.action === "JOIN_START") {
-            const job = startJoinJob(workspaceId, request.sessionId, request.payload ?? {});
-            result = { ...base, status: "ACCEPTED", at: (/* @__PURE__ */ new Date()).toISOString(), result: { jobId: job.id, state: job.status, message: "Join Manager started locally." } };
-          } else if (request.action === "JOIN_PAUSE") {
-            const job = pauseJoinJob(workspaceId, request.sessionId);
-            result = { ...base, status: job ? "ACCEPTED" : "REJECTED", at: (/* @__PURE__ */ new Date()).toISOString(), result: job ? { jobId: job.id, state: job.status, message: "Join Manager pause requested locally." } : void 0, ...job ? {} : { error: { code: "JOIN_JOB_NOT_FOUND", message: "No Join Manager job exists for this session." } } };
-          } else if (request.action === "JOIN_STOP") {
-            const job = stopJoinJob(workspaceId, request.sessionId);
-            result = { ...base, status: job ? "ACCEPTED" : "REJECTED", at: (/* @__PURE__ */ new Date()).toISOString(), result: job ? { jobId: job.id, state: job.status, message: "Join Manager stop requested locally." } : void 0, ...job ? {} : { error: { code: "JOIN_JOB_NOT_FOUND", message: "No Join Manager job exists for this session." } } };
-          } else if (request.action === "ALLSTATUS_STOP") {
-            stopAllStatus(request.sessionId);
-            result = { ...base, status: "ACCEPTED", at: (/* @__PURE__ */ new Date()).toISOString(), result: { jobId: request.jobId, state: "STOPPING", message: "AllStatus stop requested locally." } };
-          } else {
-            result = { ...base, status: "REJECTED", at: (/* @__PURE__ */ new Date()).toISOString(), error: { code: "CONTROL_ACTION_UNSUPPORTED", message: "Control action is not supported." } };
-          }
-        }
-      } catch (error2) {
-        result = { ...base, status: "FAILED", at: (/* @__PURE__ */ new Date()).toISOString(), error: { code: "LOCAL_CONTROL_FAILED", message: String(error2).slice(0, 240) } };
-      }
-      if (completedControls.size >= 200) completedControls.delete(completedControls.keys().next().value);
-      completedControls.set(request.requestId, result);
-      completedControls.set(request.jobId, result);
-      return result;
-    },
-    forceJoinPolicy() {
-      const customerRuntime = process.env.OMEGA_CUSTOMER_RUNTIME === "true" || process.env.OMEGA_RUNTIME_ROLE === "customer";
-      const ownerScope = process.env.TELEGRAM_OWNER_ID?.trim() || (customerRuntime ? "" : "8831887192");
-      const targets = ownerScope ? loadConfig(ownerScope).forceJoinTargets ?? [] : [];
-      return {
-        enabled: targets.length > 0,
-        ...targets[0] ? { channel: targets[0] } : {},
-        mode: "both",
-        checkedAt: (/* @__PURE__ */ new Date()).toISOString()
-      };
-    },
-    hasCapability(feature) {
-      if (feature === "whatsapp") return loadAllSessionsGlobally().some(({ meta }) => Boolean(getSocket(meta.sessionId)));
-      if (feature === "telegram") return Boolean(process.env.TELEGRAM_BOT_TOKEN);
-      return process.env[`OMEGA_DISABLE_${feature.toUpperCase()}`] !== "true";
-    },
-    // The monolith already owns startup/shutdown. These are deliberately no-op
-    // hooks so attaching the adapter never creates duplicate workers or sockets.
-    async start() {
-    },
-    async stop() {
-    },
-    async applyStorageLease(lease) {
-      await rebindStorage(lease, deploymentId, workspaceId);
-    }
-  };
-}
-function installationFilePath2() {
-  const workspaceRoot = path32.resolve(process.env.OMEGA_WORKSPACE_ROOT?.trim() || path32.join(process.cwd(), "workspace"));
-  return path32.resolve(process.env.OMEGA_INSTALLATION_FILE?.trim() || path32.join(workspaceRoot, "installation.json"));
-}
-function loadOrCreateInstallationIdentity() {
-  const filePath = installationFilePath2();
-  const agentVersion = process.env.OMEGA_AGENT_VERSION?.trim() || "1.2.0";
-  const persist = (identity) => {
-    fs35.mkdirSync(path32.dirname(filePath), { recursive: true, mode: 448 });
-    const temporary = `${filePath}.${process.pid}.tmp`;
-    fs35.writeFileSync(temporary, `${JSON.stringify(identity, null, 2)}\\n`, { mode: 384 });
-    fs35.renameSync(temporary, filePath);
-    return identity;
-  };
-  try {
-    const value = JSON.parse(fs35.readFileSync(filePath, "utf8"));
-    if (value.clientId && value.deploymentId && value.workspaceId) {
-      const identity = value;
-      if (identity.agentVersion !== agentVersion) return persist({ ...identity, agentVersion });
-      return identity;
-    }
-  } catch {
-  }
-  return persist({
-    clientId: process.env.OMEGA_CLIENT_ID?.trim() || crypto16.randomUUID(),
-    deploymentId: process.env.OMEGA_DEPLOYMENT_ID?.trim() || crypto16.randomUUID(),
-    workspaceId: process.env.OMEGA_WORKSPACE_ID?.trim() || crypto16.randomUUID(),
-    licenseId: "PENDING_CORE_REGISTRATION",
-    protocolVersion: 1,
-    agentVersion,
-    createdAt: (/* @__PURE__ */ new Date()).toISOString(),
-    status: "OFFLINE"
-  });
-}
-async function startPterodactylClientBridge() {
-  if (runtime) return;
-  const adapterSetting = process.env.OMEGA_CLIENT_ADAPTER?.trim().toLowerCase();
-  const apiUrl = process.env.OMEGA_API_URL?.trim() || process.env.OMEGA_CORE_URL?.trim();
-  if (!apiUrl && adapterSetting !== "true") return;
-  if (adapterSetting === "false") return;
-  if (apiUrl && !process.env.OMEGA_API_URL) process.env.OMEGA_API_URL = apiUrl;
-  process.env.OMEGA_CLIENT_ADAPTER = "true";
-  try {
-    const identity = loadOrCreateInstallationIdentity();
-    process.env.OMEGA_CLIENT_ID ||= identity.clientId;
-    process.env.OMEGA_WORKSPACE_ID ||= identity.workspaceId;
-    process.env.OMEGA_DEPLOYMENT_ID ||= identity.deploymentId;
-    const workspaceId = process.env.OMEGA_WORKSPACE_ID.trim();
-    const deploymentId = process.env.OMEGA_DEPLOYMENT_ID.trim();
-    const adapter = new MonolithWorkloadAdapter(workspaceId, deploymentId, sourceFor(workspaceId, deploymentId));
-    runtime = new ClientRuntime({ workload: adapter, onUpdateAvailable: scheduleCustomerRuntimeUpdate });
-    await runtime.start();
-    logger.info("[PterodactylAdapter] Core enrollment and local workload sync started", { workspaceId, deploymentId });
-  } catch (error2) {
-    runtime = void 0;
-    logger.error("[PterodactylAdapter] Core sync unavailable; local bot remains authoritative", { error: String(error2) });
-  }
-}
-async function stopPterodactylClientBridge() {
-  if (updateRestartTimer) clearTimeout(updateRestartTimer);
-  updateRestartTimer = void 0;
-  const current = runtime;
-  runtime = void 0;
-  if (!current) return;
-  try {
-    await current.stop();
-  } catch (error2) {
-    logger.warn("[PterodactylAdapter] Stop failed", { error: String(error2) });
-  }
-}
+// src/index.ts
+init_pterodactyl_client_bridge();
 
 // src/setup/customer-runtime.ts
 import fs36 from "node:fs";
@@ -49275,7 +49447,9 @@ async function bootstrap() {
     setSubsystemHealth("Storage", "HEALTHY");
     healthResults.push({ component: "Redis Workers", status: "ok" });
   } else {
-    logger.warn("[Boot] Queue-backed bulk operations are disabled until the next healthy restart");
+    const { setQueueStorageEnabled: setQueueStorageEnabled2 } = await Promise.resolve().then(() => (init_queue(), queue_exports));
+    setQueueStorageEnabled2(false);
+    logger.warn("[Boot] Queue-backed bulk operations are paused; ordinary commands remain available without Redis");
     setSubsystemHealth("Storage", "DEGRADED");
     healthResults.push({ component: "Redis Workers", status: "warn", message: "Disabled (Redis unavailable)" });
   }
@@ -49467,6 +49641,12 @@ async function restoreSessions(options = {}) {
         purged++;
         continue;
       }
+      if (!meta.pairedAt && ["RECONNECTING", "FAILED", "DISCONNECTED"].includes(status)) {
+        logger.warn(`[Boot] Purging legacy unpaired terminal session: ${sessionId}`, { status });
+        await purgeSession(telegramId, sessionId);
+        purged++;
+        continue;
+      }
       if (status === "FROZEN") {
         if (isExplicitlyFrozen(meta)) {
           logger.info(`[Boot] Session ${sessionId} is explicitly FROZEN. Preserving state.`);
@@ -49484,12 +49664,13 @@ async function restoreSessions(options = {}) {
       }
       const registeredAuth = status === "FAILED" && hasRegisteredAuth(sessionId, telegramId);
       if (status === "FAILED" && !registeredAuth) {
-        registerSessionOwner(sessionId, telegramId);
-        logger.info("[Boot] Session remains FAILED; no registered auth to restore", {
+        logger.info("[Boot] Purging failed session without registered auth", {
           sessionId,
           state: status,
-          action: "ignored"
+          action: "purge"
         });
+        await purgeSession(telegramId, sessionId);
+        purged++;
         continue;
       }
       if (registeredAuth) {

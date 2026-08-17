@@ -115,6 +115,16 @@ var CoreClient = class {
     }
     return value;
   }
+  async updateStorageLease(update) {
+    const value = await this.request("/v1/agent/storage", { method: "POST", body: update, authenticated: true });
+    if (!value || typeof value !== "object")
+      throw new Error("Core returned an invalid updated storage lease.");
+    const lease = value;
+    if (typeof lease.deploymentId !== "string" || typeof lease.workspaceId !== "string" || !["CUSTOMER", "HOSTED", "DISABLED"].includes(String(lease.mode)) || typeof lease.revision !== "number" || typeof lease.issuedAt !== "string") {
+      throw new Error("Core returned an invalid updated storage lease.");
+    }
+    return value;
+  }
   async checkVersion() {
     const value = await this.request("/v1/agent/version", { method: "GET", authenticated: true });
     if (!value.updateAvailable)
@@ -638,6 +648,18 @@ var ClientRuntime = class {
   }
   requireCapability(feature) {
     this.capabilities.require(feature);
+  }
+  async updateStorageLease(update) {
+    if (!this.identity)
+      throw new Error("Client is not started.");
+    const lease = await this.core.updateStorageLease(update);
+    if (lease.deploymentId !== this.identity.deploymentId || lease.workspaceId !== this.identity.workspaceId)
+      throw new Error("Updated storage lease ownership mismatch.");
+    if (this.workload.applyStorageLease)
+      await this.workload.applyStorageLease(lease);
+    this.storageLease = lease;
+    this.logger.info("STORAGE", "Storage lease hot-applied", { mode: lease.mode, revision: lease.revision });
+    return lease;
   }
   async rotateCoreCredential() {
     if (!this.identity)
