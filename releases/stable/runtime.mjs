@@ -31255,7 +31255,7 @@ var require_package = __commonJS({
   "package.json"(exports, module) {
     module.exports = {
       name: "@workspace/wa-bridge",
-      version: "1.2.7",
+      version: "1.2.8",
       description: "Telegram \u2194 WhatsApp Automation Bridge \u2014 Production-Grade Multi-Device Control Center",
       type: "module",
       main: "dist/index.js",
@@ -47469,6 +47469,9 @@ function waitSync(milliseconds) {
   const signal = new Int32Array(new SharedArrayBuffer(4));
   Atomics.wait(signal, 0, 0, milliseconds);
 }
+function sameHostCustomerTakeoverAllowed(existing) {
+  return existing.hostname === os4.hostname() && (process.env.OMEGA_CUSTOMER_RUNTIME === "true" || process.env.OMEGA_PLATFORM === "pterodactyl" || process.env.OMEGA_RUNTIME_ROLE === "customer");
+}
 function staleHeartbeat(existing) {
   const heartbeatAt = Date.parse(existing.heartbeatAt);
   return existing.hostname === os4.hostname() && Number.isFinite(heartbeatAt) && Date.now() - heartbeatAt > LEASE_STALE_MS;
@@ -47500,16 +47503,19 @@ function acquireRuntimeLease() {
   fs33.mkdirSync(WORKSPACE_ROOT, { recursive: true, mode: 448 });
   const existing = readLease();
   if (existing && existing.pid !== process.pid && pidAlive(existing.pid)) {
-    if (!staleHeartbeat(existing)) {
+    const sameHostCustomerTakeover = sameHostCustomerTakeoverAllowed(existing);
+    const stale = staleHeartbeat(existing);
+    if (!sameHostCustomerTakeover && !stale) {
       throw new Error(
         `Omega workspace is already owned by a live ${existing.role} process (pid ${existing.pid} on ${existing.hostname}). Stop that runtime before starting another one.`
       );
     }
-    logger.warn("[RuntimeLease] Taking over stale same-host runtime lease", {
+    logger.warn("[RuntimeLease] Taking over previous same-host runtime lease", {
       pid: existing.pid,
       role: existing.role,
       heartbeatAt: existing.heartbeatAt,
-      staleMs: Date.now() - Date.parse(existing.heartbeatAt)
+      staleMs: Number.isFinite(Date.parse(existing.heartbeatAt)) ? Date.now() - Date.parse(existing.heartbeatAt) : void 0,
+      takeoverMode: sameHostCustomerTakeover ? "customer-restart" : "stale-heartbeat"
     });
     try {
       process.kill(existing.pid, "SIGTERM");
