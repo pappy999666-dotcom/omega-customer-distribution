@@ -30931,7 +30931,7 @@ var require_package = __commonJS({
   "package.json"(exports, module) {
     module.exports = {
       name: "@workspace/wa-bridge",
-      version: "1.2.3",
+      version: "1.2.4",
       description: "Telegram \u2194 WhatsApp Automation Bridge \u2014 Production-Grade Multi-Device Control Center",
       type: "module",
       main: "dist/index.js",
@@ -30969,6 +30969,7 @@ var require_package = __commonJS({
         "node-cache": "^5.1.2",
         "node-fetch": "^3.3.2",
         "p-queue": "^8.1.0",
+        "p-limit": "^6.2.0",
         "p-retry": "^6.2.1",
         pino: "^9.7.0",
         qrcode: "^1.5.4",
@@ -30992,7 +30993,6 @@ var require_package = __commonJS({
         "@types/node": "catalog:",
         "@types/qrcode": "^1.5.5",
         esbuild: "0.27.3",
-        "p-limit": "^6.2.0",
         tsx: "catalog:",
         typescript: "^5.9.3"
       }

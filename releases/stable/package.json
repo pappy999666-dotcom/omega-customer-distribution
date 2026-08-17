@@ -1,6 +1,6 @@
 {
   "name": "omega-customer-runtime",
-  "version": "1.2.3",
+  "version": "1.2.4",
   "private": true,
   "type": "module",
   "main": "index.js",
@@ -30,6 +30,7 @@
     "node-cache": "^5.1.2",
     "node-fetch": "^3.3.2",
     "p-queue": "^8.1.0",
+    "p-limit": "^6.2.0",
     "p-retry": "^6.2.1",
     "pino": "^9.7.0",
     "qrcode": "^1.5.4",
