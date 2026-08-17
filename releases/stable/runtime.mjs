@@ -31255,7 +31255,7 @@ var require_package = __commonJS({
   "package.json"(exports, module) {
     module.exports = {
       name: "@workspace/wa-bridge",
-      version: "1.2.9",
+      version: "1.2.10",
       description: "Telegram \u2194 WhatsApp Automation Bridge \u2014 Production-Grade Multi-Device Control Center",
       type: "module",
       main: "dist/index.js",
@@ -47483,8 +47483,19 @@ function readLease() {
     return void 0;
   }
 }
+function pidState(pid) {
+  try {
+    const stat = fs33.readFileSync(`/proc/${pid}/stat`, "utf8");
+    const close = stat.lastIndexOf(")");
+    return close >= 0 ? stat.slice(close + 2).trimStart()[0] : void 0;
+  } catch {
+    return void 0;
+  }
+}
 function pidAlive(pid) {
   if (!Number.isInteger(pid) || pid <= 0) return false;
+  const state = pidState(pid);
+  if (state === "Z" || state === "X") return false;
   try {
     process.kill(pid, 0);
     return true;
