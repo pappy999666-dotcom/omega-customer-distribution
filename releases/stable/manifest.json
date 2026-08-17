@@ -1,7 +1,7 @@
 {
-  "version": "1.2.27",
+  "version": "1.2.28",
   "channel": "stable",
-  "generatedAt": "2026-08-17T19:29:57.842463+00:00",
+  "generatedAt": "2026-08-17T21:27:26.655560+00:00",
   "files": [
     {
       "path": ".npmrc",
@@ -13,15 +13,15 @@
     },
     {
       "path": "index.js",
-      "sha256": "7ddfe5a2d548ba2f5d4513a871b6ac389852f191e44e2655ded4f298d7a9f79d"
+      "sha256": "11c8aba67296d54d423d074a92e54d964b65a93c2b8643c6cb3967e7f41b5006"
     },
     {
       "path": "package-lock.json",
-      "sha256": "991982cdd5a69f52a4688d59dca1134ded33c4eb5863cd436c0ed3204943ab2e"
+      "sha256": "c1b3620b9cd992729035ee1e08d12dcd724bb6a426b30062b0145c6ad28e9cff"
     },
     {
       "path": "package.json",
-      "sha256": "06e30763c3ec084ae261489062ff9a445c78ff2fcf15b19dde0282a86cfbc953"
+      "sha256": "5c0ded5144bf2c46a52f99ad2274d8ce80b99fc337f6d8117d8c4d0830c28a2e"
     },
     {
       "path": "public/app.js",
@@ -37,7 +37,7 @@
     },
     {
       "path": "runtime.mjs",
-      "sha256": "a30cf58c2aceef564846da26965a8eef129065192999bdd958e46fe60f54cc49"
+      "sha256": "767b20cd64c8c06bd7e609af8a50eff3c307fac25c06842ae60f9ee28448c89e"
     },
     {
       "path": "vendor/omega-client/index.js",

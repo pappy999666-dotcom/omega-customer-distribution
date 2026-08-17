@@ -554,6 +554,60 @@ var init_delay = __esm({
   }
 });
 
+// src/services/auth-store-maintenance.ts
+import { readdir, stat, unlink } from "node:fs/promises";
+import path2 from "node:path";
+function maxAgeMs() {
+  const hours = Number(process.env.WA_AUTH_DEVICE_LIST_MAX_AGE_HOURS ?? "24");
+  return Number.isFinite(hours) && hours > 0 ? hours * 60 * 6e4 : DEFAULT_MAX_AGE_MS;
+}
+async function pruneStaleDeviceListFiles(authDir) {
+  const now3 = Date.now();
+  const previous = lastRun.get(authDir) ?? 0;
+  if (now3 - previous < MIN_RUN_INTERVAL_MS) return;
+  lastRun.set(authDir, now3);
+  let entries;
+  try {
+    entries = await readdir(authDir, { withFileTypes: true });
+  } catch (error2) {
+    logger.debug("[AuthStore] Device-list scan skipped", { authDir, err: String(error2) });
+    return;
+  }
+  const cutoff = now3 - maxAgeMs();
+  let scanned = 0;
+  let removed = 0;
+  for (const entry of entries) {
+    if (!entry.isFile() || !/^device-list-\d+\.json$/u.test(entry.name)) continue;
+    scanned += 1;
+    const filePath = path2.join(authDir, entry.name);
+    try {
+      const info2 = await stat(filePath);
+      if (info2.mtimeMs >= cutoff) continue;
+      await unlink(filePath);
+      removed += 1;
+    } catch {
+    }
+  }
+  if (removed > 0) {
+    logger.info("[AuthStore] Pruned stale device-list cache entries", {
+      authDir,
+      scanned,
+      removed,
+      maxAgeHours: maxAgeMs() / 60 / 6e4
+    });
+  }
+}
+var lastRun, MIN_RUN_INTERVAL_MS, DEFAULT_MAX_AGE_MS;
+var init_auth_store_maintenance = __esm({
+  "src/services/auth-store-maintenance.ts"() {
+    "use strict";
+    init_logger();
+    lastRun = /* @__PURE__ */ new Map();
+    MIN_RUN_INTERVAL_MS = 15 * 6e4;
+    DEFAULT_MAX_AGE_MS = 24 * 60 * 6e4;
+  }
+});
+
 // src/whatsapp/message-store.ts
 function boundedEnv(name, fallback, minimum, maximum) {
   const parsed = Number.parseInt(process.env[name] ?? "", 10);
@@ -1081,6 +1135,184 @@ var init_country_codes = __esm({
       { code: "998", countries: "Uzbekistan", region: "Asia" }
     ];
     byCode = new Map(COUNTRY_CALLING_CODES.map((entry) => [entry.code, entry]));
+  }
+});
+
+// src/whatsapp/utils/identity.ts
+function stripDeviceSuffix(jid) {
+  if (!jid) return jid;
+  const at = jid.indexOf("@");
+  if (at === -1) return jid;
+  return `${jid.slice(0, at).split(":")[0]}@${jid.slice(at + 1)}`;
+}
+function normalizeJid(jid) {
+  if (!jid) return "";
+  return stripDeviceSuffix(String(jid));
+}
+function isLidJid(jid) {
+  return Boolean(jid) && String(jid).endsWith("@lid");
+}
+function isPhoneJid(jid) {
+  return Boolean(jid) && String(jid).endsWith("@s.whatsapp.net");
+}
+function normalizePhone(value) {
+  if (!value) return "";
+  const user = String(value).split("@")[0]?.split(":")[0] ?? "";
+  return user.replace(/\D/g, "");
+}
+function lidMapping(socket) {
+  return socket?.signalRepository?.lidMapping;
+}
+function baileysModule() {
+  _baileysMod ??= import("@crysnovax/baileys");
+  return _baileysMod;
+}
+async function decodeJidAsync(jid) {
+  const raw = normalizeJid(jid);
+  if (!raw) return "";
+  try {
+    const mod = await baileysModule();
+    const jidDecode = mod["jidDecode"];
+    if (typeof jidDecode === "function") {
+      const decoded = jidDecode(raw);
+      if (decoded?.user && decoded.server) return `${decoded.user}@${decoded.server}`;
+    }
+  } catch {
+  }
+  return raw;
+}
+async function identityVariants(socket, jid) {
+  const out = /* @__PURE__ */ new Set();
+  const norm = normalizeJid(jid);
+  if (!norm) return out;
+  out.add(norm);
+  try {
+    const decoded = await decodeJidAsync(norm);
+    if (decoded && decoded !== norm) out.add(decoded);
+  } catch {
+  }
+  try {
+    const map = lidMapping(socket);
+    if (map?.getPNForLID && norm.endsWith("@lid")) {
+      const pn = await map.getPNForLID(norm);
+      if (pn) out.add(normalizeJid(pn));
+    } else if (map?.getLIDForPN && norm.endsWith("@s.whatsapp.net")) {
+      const lid = await map.getLIDForPN(norm);
+      if (lid) out.add(normalizeJid(lid));
+    }
+  } catch {
+  }
+  return out;
+}
+function getContextInfoAny(message) {
+  if (!message) return null;
+  const m = message;
+  const inner = m.ephemeralMessage?.message ?? m.viewOnceMessage?.message ?? m.viewOnceMessageV2?.message ?? m.viewOnceMessageV2Extension?.message ?? m.documentWithCaptionMessage?.message ?? m.groupStatusMessage?.message ?? m.groupStatusMessageV2?.message ?? m;
+  const ci = inner?.extendedTextMessage?.contextInfo ?? inner?.imageMessage?.contextInfo ?? inner?.videoMessage?.contextInfo ?? inner?.audioMessage?.contextInfo ?? inner?.stickerMessage?.contextInfo ?? inner?.documentMessage?.contextInfo ?? inner?.buttonsMessage?.contextInfo ?? inner?.listMessage?.contextInfo ?? inner?.templateMessage?.contextInfo ?? inner?.interactiveMessage?.contextInfo ?? inner?.contactMessage?.contextInfo ?? inner?.locationMessage?.contextInfo ?? inner?.groupStatusMessage?.contextInfo ?? inner?.groupStatusMessageV2?.contextInfo ?? null;
+  return ci ?? null;
+}
+function quotedMessageOf(message) {
+  return getContextInfoAny(message)?.quotedMessage ?? null;
+}
+function extractMessageTextAny(message) {
+  if (!message) return "";
+  const m = message;
+  const wrapped = m.ephemeralMessage?.message ?? m.viewOnceMessage?.message ?? m.viewOnceMessageV2?.message ?? m.viewOnceMessageV2Extension?.message ?? m.documentWithCaptionMessage?.message;
+  if (wrapped) return extractMessageTextAny(wrapped);
+  const text2 = m.conversation ?? m.extendedTextMessage?.text ?? m.imageMessage?.caption ?? m.videoMessage?.caption ?? m.documentMessage?.caption ?? m.audioMessage?.caption ?? m.stickerMessage?.caption ?? m.documentWithCaptionMessage?.message?.imageMessage?.caption ?? m.documentWithCaptionMessage?.message?.videoMessage?.caption ?? m.documentWithCaptionMessage?.message?.audioMessage?.caption ?? m.documentWithCaptionMessage?.message?.documentMessage?.caption ?? m.buttonsMessage?.contentText ?? m.listMessage?.description ?? m.listResponseMessage?.singleSelectReply?.selectedRowId ?? m.buttonsResponseMessage?.selectedButtonId ?? m.templateMessage?.hydratedTemplate?.hydratedContentText ?? m.pollCreationMessage?.name ?? m.groupStatusMessage?.message?.extendedTextMessage?.text ?? m.groupStatusMessageV2?.message?.extendedTextMessage?.text ?? "";
+  return typeof text2 === "string" ? text2 : "";
+}
+function toPhoneJid(value) {
+  if (!value) return "";
+  const v = String(value);
+  if (v.includes("@")) {
+    const n = normalizeJid(v);
+    return isPhoneJid(n) ? n : "";
+  }
+  const digits = v.replace(/\D/g, "");
+  return digits ? `${digits}@s.whatsapp.net` : "";
+}
+function normalizeParticipantUpdateJids(participants) {
+  const out = [];
+  for (const p of participants ?? []) {
+    if (typeof p === "string") {
+      const n = normalizeJid(p);
+      if (n && !out.includes(n)) out.push(n);
+      continue;
+    }
+    const o = p ?? {};
+    const phoneJid = toPhoneJid(o.phoneNumber ?? o.pn ?? "");
+    const idJid = normalizeJid(o.id ?? o.jid ?? o.lid ?? "");
+    const picked = phoneJid || idJid;
+    if (picked && !out.includes(picked)) out.push(picked);
+  }
+  return out;
+}
+async function resolveIdentity(socket, rawJid, participants) {
+  const norm = normalizeJid(rawJid);
+  if (!norm) return { jid: "", number: "", isLid: false };
+  const isLid2 = norm.endsWith("@lid");
+  if (isLid2) {
+    const variants = await identityVariants(socket, norm).catch(() => /* @__PURE__ */ new Set());
+    const real = [...variants].find(isPhoneJid);
+    if (real) return { jid: real, number: normalizePhone(real), isLid: isLid2 };
+  }
+  if (participants?.length) {
+    const match = participants.find((p) => {
+      const own = [p.id, p.jid, p.lid].filter(Boolean).map((v) => normalizeJid(v));
+      return own.includes(norm);
+    });
+    if (match) {
+      const phone = normalizePhone(match.phoneNumber ?? match.pn);
+      if (phone) return { jid: `${phone}@s.whatsapp.net`, number: phone, isLid: isLid2 };
+      const ownJid = normalizeJid(match.id ?? match.jid ?? "");
+      if (ownJid && isPhoneJid(ownJid)) {
+        return { jid: ownJid, number: normalizePhone(ownJid), isLid: isLid2 };
+      }
+    }
+  }
+  if (isPhoneJid(norm)) return { jid: norm, number: normalizePhone(norm), isLid: isLid2 };
+  if (isLid2) return { jid: "", number: "", isLid: isLid2 };
+  return { jid: norm, number: normalizePhone(norm), isLid: isLid2 };
+}
+async function displayNameFor(socket, rawJid) {
+  const norm = normalizeJid(rawJid);
+  if (!norm) return "Unknown";
+  try {
+    const sock = socket;
+    const contact = sock?.store?.contacts?.[norm] ?? sock?.contacts?.[norm] ?? sock?.store?.contacts?.[norm.replace("@s.whatsapp.net", "@lid")];
+    if (contact?.name) return contact.name;
+    if (contact?.notify) return contact.notify;
+    if (contact?.verifiedName) return contact.verifiedName;
+  } catch {
+  }
+  const num = normalizePhone(norm);
+  return num ? num : "Unknown";
+}
+async function profilePicBuffer(socket, rawJid) {
+  const jid = normalizeJid(rawJid);
+  if (!jid) return null;
+  try {
+    const ppUrl = await socket?.profilePictureUrl?.(jid, "image").catch(() => null);
+    if (!ppUrl) return null;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 1e4);
+    try {
+      const res = await fetch(ppUrl, { signal: controller.signal });
+      if (!res.ok) return null;
+      return Buffer.from(await res.arrayBuffer());
+    } finally {
+      clearTimeout(timeout);
+    }
+  } catch {
+    return null;
+  }
+}
+var _baileysMod;
+var init_identity = __esm({
+  "src/whatsapp/utils/identity.ts"() {
+    "use strict";
+    _baileysMod = null;
   }
 });
 
@@ -2849,184 +3081,6 @@ var init_PayloadBuilder = __esm({
   }
 });
 
-// src/whatsapp/utils/identity.ts
-function stripDeviceSuffix(jid) {
-  if (!jid) return jid;
-  const at = jid.indexOf("@");
-  if (at === -1) return jid;
-  return `${jid.slice(0, at).split(":")[0]}@${jid.slice(at + 1)}`;
-}
-function normalizeJid(jid) {
-  if (!jid) return "";
-  return stripDeviceSuffix(String(jid));
-}
-function isLidJid(jid) {
-  return Boolean(jid) && String(jid).endsWith("@lid");
-}
-function isPhoneJid(jid) {
-  return Boolean(jid) && String(jid).endsWith("@s.whatsapp.net");
-}
-function normalizePhone(value) {
-  if (!value) return "";
-  const user = String(value).split("@")[0]?.split(":")[0] ?? "";
-  return user.replace(/\D/g, "");
-}
-function lidMapping(socket) {
-  return socket?.signalRepository?.lidMapping;
-}
-function baileysModule() {
-  _baileysMod ??= import("@crysnovax/baileys");
-  return _baileysMod;
-}
-async function decodeJidAsync(jid) {
-  const raw = normalizeJid(jid);
-  if (!raw) return "";
-  try {
-    const mod = await baileysModule();
-    const jidDecode = mod["jidDecode"];
-    if (typeof jidDecode === "function") {
-      const decoded = jidDecode(raw);
-      if (decoded?.user && decoded.server) return `${decoded.user}@${decoded.server}`;
-    }
-  } catch {
-  }
-  return raw;
-}
-async function identityVariants(socket, jid) {
-  const out = /* @__PURE__ */ new Set();
-  const norm = normalizeJid(jid);
-  if (!norm) return out;
-  out.add(norm);
-  try {
-    const decoded = await decodeJidAsync(norm);
-    if (decoded && decoded !== norm) out.add(decoded);
-  } catch {
-  }
-  try {
-    const map = lidMapping(socket);
-    if (map?.getPNForLID && norm.endsWith("@lid")) {
-      const pn = await map.getPNForLID(norm);
-      if (pn) out.add(normalizeJid(pn));
-    } else if (map?.getLIDForPN && norm.endsWith("@s.whatsapp.net")) {
-      const lid = await map.getLIDForPN(norm);
-      if (lid) out.add(normalizeJid(lid));
-    }
-  } catch {
-  }
-  return out;
-}
-function getContextInfoAny(message) {
-  if (!message) return null;
-  const m = message;
-  const inner = m.ephemeralMessage?.message ?? m.viewOnceMessage?.message ?? m.viewOnceMessageV2?.message ?? m.viewOnceMessageV2Extension?.message ?? m.documentWithCaptionMessage?.message ?? m.groupStatusMessage?.message ?? m.groupStatusMessageV2?.message ?? m;
-  const ci = inner?.extendedTextMessage?.contextInfo ?? inner?.imageMessage?.contextInfo ?? inner?.videoMessage?.contextInfo ?? inner?.audioMessage?.contextInfo ?? inner?.stickerMessage?.contextInfo ?? inner?.documentMessage?.contextInfo ?? inner?.buttonsMessage?.contextInfo ?? inner?.listMessage?.contextInfo ?? inner?.templateMessage?.contextInfo ?? inner?.interactiveMessage?.contextInfo ?? inner?.contactMessage?.contextInfo ?? inner?.locationMessage?.contextInfo ?? inner?.groupStatusMessage?.contextInfo ?? inner?.groupStatusMessageV2?.contextInfo ?? null;
-  return ci ?? null;
-}
-function quotedMessageOf(message) {
-  return getContextInfoAny(message)?.quotedMessage ?? null;
-}
-function extractMessageTextAny(message) {
-  if (!message) return "";
-  const m = message;
-  const wrapped = m.ephemeralMessage?.message ?? m.viewOnceMessage?.message ?? m.viewOnceMessageV2?.message ?? m.viewOnceMessageV2Extension?.message ?? m.documentWithCaptionMessage?.message;
-  if (wrapped) return extractMessageTextAny(wrapped);
-  const text2 = m.conversation ?? m.extendedTextMessage?.text ?? m.imageMessage?.caption ?? m.videoMessage?.caption ?? m.documentMessage?.caption ?? m.audioMessage?.caption ?? m.stickerMessage?.caption ?? m.documentWithCaptionMessage?.message?.imageMessage?.caption ?? m.documentWithCaptionMessage?.message?.videoMessage?.caption ?? m.documentWithCaptionMessage?.message?.audioMessage?.caption ?? m.documentWithCaptionMessage?.message?.documentMessage?.caption ?? m.buttonsMessage?.contentText ?? m.listMessage?.description ?? m.listResponseMessage?.singleSelectReply?.selectedRowId ?? m.buttonsResponseMessage?.selectedButtonId ?? m.templateMessage?.hydratedTemplate?.hydratedContentText ?? m.pollCreationMessage?.name ?? m.groupStatusMessage?.message?.extendedTextMessage?.text ?? m.groupStatusMessageV2?.message?.extendedTextMessage?.text ?? "";
-  return typeof text2 === "string" ? text2 : "";
-}
-function toPhoneJid(value) {
-  if (!value) return "";
-  const v = String(value);
-  if (v.includes("@")) {
-    const n = normalizeJid(v);
-    return isPhoneJid(n) ? n : "";
-  }
-  const digits = v.replace(/\D/g, "");
-  return digits ? `${digits}@s.whatsapp.net` : "";
-}
-function normalizeParticipantUpdateJids(participants) {
-  const out = [];
-  for (const p of participants ?? []) {
-    if (typeof p === "string") {
-      const n = normalizeJid(p);
-      if (n && !out.includes(n)) out.push(n);
-      continue;
-    }
-    const o = p ?? {};
-    const phoneJid = toPhoneJid(o.phoneNumber ?? o.pn ?? "");
-    const idJid = normalizeJid(o.id ?? o.jid ?? o.lid ?? "");
-    const picked = phoneJid || idJid;
-    if (picked && !out.includes(picked)) out.push(picked);
-  }
-  return out;
-}
-async function resolveIdentity(socket, rawJid, participants) {
-  const norm = normalizeJid(rawJid);
-  if (!norm) return { jid: "", number: "", isLid: false };
-  const isLid2 = norm.endsWith("@lid");
-  if (isLid2) {
-    const variants = await identityVariants(socket, norm).catch(() => /* @__PURE__ */ new Set());
-    const real = [...variants].find(isPhoneJid);
-    if (real) return { jid: real, number: normalizePhone(real), isLid: isLid2 };
-  }
-  if (participants?.length) {
-    const match = participants.find((p) => {
-      const own = [p.id, p.jid, p.lid].filter(Boolean).map((v) => normalizeJid(v));
-      return own.includes(norm);
-    });
-    if (match) {
-      const phone = normalizePhone(match.phoneNumber ?? match.pn);
-      if (phone) return { jid: `${phone}@s.whatsapp.net`, number: phone, isLid: isLid2 };
-      const ownJid = normalizeJid(match.id ?? match.jid ?? "");
-      if (ownJid && isPhoneJid(ownJid)) {
-        return { jid: ownJid, number: normalizePhone(ownJid), isLid: isLid2 };
-      }
-    }
-  }
-  if (isPhoneJid(norm)) return { jid: norm, number: normalizePhone(norm), isLid: isLid2 };
-  if (isLid2) return { jid: "", number: "", isLid: isLid2 };
-  return { jid: norm, number: normalizePhone(norm), isLid: isLid2 };
-}
-async function displayNameFor(socket, rawJid) {
-  const norm = normalizeJid(rawJid);
-  if (!norm) return "Unknown";
-  try {
-    const sock = socket;
-    const contact = sock?.store?.contacts?.[norm] ?? sock?.contacts?.[norm] ?? sock?.store?.contacts?.[norm.replace("@s.whatsapp.net", "@lid")];
-    if (contact?.name) return contact.name;
-    if (contact?.notify) return contact.notify;
-    if (contact?.verifiedName) return contact.verifiedName;
-  } catch {
-  }
-  const num = normalizePhone(norm);
-  return num ? num : "Unknown";
-}
-async function profilePicBuffer(socket, rawJid) {
-  const jid = normalizeJid(rawJid);
-  if (!jid) return null;
-  try {
-    const ppUrl = await socket?.profilePictureUrl?.(jid, "image").catch(() => null);
-    if (!ppUrl) return null;
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 1e4);
-    try {
-      const res = await fetch(ppUrl, { signal: controller.signal });
-      if (!res.ok) return null;
-      return Buffer.from(await res.arrayBuffer());
-    } finally {
-      clearTimeout(timeout);
-    }
-  } catch {
-    return null;
-  }
-}
-var _baileysMod;
-var init_identity = __esm({
-  "src/whatsapp/utils/identity.ts"() {
-    "use strict";
-    _baileysMod = null;
-  }
-});
-
 // src/whatsapp/utils/mention-engine.ts
 function mentionToken(value) {
   if (!value) return "";
@@ -3871,8 +3925,15 @@ function markSessionOperationSuccess(sessionId) {
 function markSessionOperationFailure(sessionId, error2) {
   const snapshot = ensure(sessionId);
   snapshot.pendingOperations = Math.max(0, snapshot.pendingOperations - 1);
+  const text2 = String(error2);
   snapshot.lastOperationAt = now();
-  snapshot.lastError = String(error2).slice(0, 500);
+  snapshot.lastError = text2.slice(0, 500);
+  const benignCiphertext = /messageType["']?\s*[:=]\s*["']?skmsg/i.test(text2) && /isSessionRecordError["']?\s*[:=]\s*["']?false/i.test(text2) && /failed to decrypt|no session found to decrypt/i.test(text2);
+  if (benignCiphertext) {
+    if (snapshot.state === "UNHEALTHY") snapshot.state = "DEGRADED";
+    touch(snapshot);
+    return;
+  }
   snapshot.consecutiveFailures += 1;
   if (snapshot.consecutiveFailures >= FAILURE_THRESHOLD) snapshot.state = "UNHEALTHY";
   else snapshot.state = "DEGRADED";
@@ -4217,7 +4278,7 @@ function unwrapMessage(raw) {
   let viewOnce = false;
   let ephemeral = false;
   let forwarded = false;
-  const path36 = [];
+  const path37 = [];
   const seen3 = /* @__PURE__ */ new Set();
   const MAX_DEPTH = 16;
   for (let i = 0; i < MAX_DEPTH; i++) {
@@ -4229,13 +4290,13 @@ function unwrapMessage(raw) {
     if (VIEW_ONCE_KEYS.includes(key2)) viewOnce = true;
     if (EPHEMERAL_KEYS.includes(key2)) ephemeral = true;
     if (FORWARD_KEYS.includes(key2)) forwarded = true;
-    path36.push(key2);
+    path37.push(key2);
     const node = current[key2];
     current = node?.message ?? node;
   }
   const mediaNode = current?.imageMessage ?? current?.videoMessage ?? current?.audioMessage ?? current?.stickerMessage ?? current?.documentMessage;
   if (mediaNode?.viewOnce === true || current?.viewOnce === true) viewOnce = true;
-  return { inner: current, viewOnce, ephemeral, forwarded, path: path36 };
+  return { inner: current, viewOnce, ephemeral, forwarded, path: path37 };
 }
 var WRAPPER_KEYS, VIEW_ONCE_KEYS, EPHEMERAL_KEYS, FORWARD_KEYS;
 var init_MessageUnwrapper = __esm({
@@ -5065,7 +5126,7 @@ var init_QuotedMessageResolver = __esm({
 
 // src/whatsapp/personal-engine.ts
 import fs2 from "fs";
-import path2 from "path";
+import path3 from "path";
 function defaults() {
   return {
     chats: {},
@@ -5078,7 +5139,7 @@ function defaults() {
   };
 }
 function engineConfigPath(telegramId, sessionId) {
-  return path2.join(sessionDir(telegramId, sessionId), "engine-config.json");
+  return path3.join(sessionDir(telegramId, sessionId), "engine-config.json");
 }
 function loadEngineFile(telegramId, sessionId) {
   const p = engineConfigPath(telegramId, sessionId);
@@ -5092,7 +5153,7 @@ function loadEngineFile(telegramId, sessionId) {
 }
 function saveEngineFile(telegramId, sessionId, file) {
   const p = engineConfigPath(telegramId, sessionId);
-  fs2.mkdirSync(path2.dirname(p), { recursive: true });
+  fs2.mkdirSync(path3.dirname(p), { recursive: true });
   fs2.writeFileSync(p, JSON.stringify(file, null, 2), "utf8");
 }
 function getChatEngineConfig(telegramId, sessionId, chatJid) {
@@ -5897,7 +5958,7 @@ __export(tri_bucket_exports, {
   getMasterBucket: () => getMasterBucket,
   validateLink: () => validateLink
 });
-import path3 from "path";
+import path4 from "path";
 import fs3 from "fs";
 function extractAllInviteLinks(text2) {
   const primary = text2.matchAll(
@@ -5963,7 +6024,7 @@ function exportBucketWithReport(telegramId, bucket, format) {
   const ts = (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
   const uniqueSuffix = `${Date.now()}-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
   const filename = `${bucket}-${ts}-${uniqueSuffix}${format === "merge" ? "-merged" : ""}.${actualFormat}`;
-  const filepath = path3.join(dir, filename);
+  const filepath = path4.join(dir, filename);
   if (actualFormat === "txt") {
     fs3.writeFileSync(filepath, entries.map((e) => e.link).join("\n"));
   } else if (actualFormat === "csv") {
@@ -8129,7 +8190,7 @@ __export(plugin_engine_exports, {
 });
 import fs4 from "node:fs";
 import fsp from "node:fs/promises";
-import path4 from "node:path";
+import path5 from "node:path";
 import { pathToFileURL } from "node:url";
 import crypto3 from "node:crypto";
 import { builtinModules, createRequire as createRequire2 } from "node:module";
@@ -8139,16 +8200,16 @@ function pluginKey(telegramId, sessionId) {
   return `omega:plugins:${telegramId}:${sessionId}`;
 }
 function manifestPath(telegramId, sessionId) {
-  return path4.join(sessionDir(telegramId, sessionId), "plugins", "manifest.json");
+  return path5.join(sessionDir(telegramId, sessionId), "plugins", "manifest.json");
 }
 function pluginRoot(telegramId, sessionId, id) {
-  return path4.join(sessionDir(telegramId, sessionId), "plugins", id);
+  return path5.join(sessionDir(telegramId, sessionId), "plugins", id);
 }
 function normalizeName(value) {
   return String(value ?? "").trim().toLowerCase().replace(/^[./!]+/u, "");
 }
 function pluginExtension(fileName) {
-  const extension = path4.extname(path4.basename(String(fileName ?? ""))).toLowerCase();
+  const extension = path5.extname(path5.basename(String(fileName ?? ""))).toLowerCase();
   return extension === ".js" || extension === ".ts" ? extension : null;
 }
 function unsupportedPluginTypeError() {
@@ -8240,7 +8301,7 @@ function parseDependencies(input2) {
 }
 async function readSiblingDependencies(sourceFile) {
   try {
-    const parsed = JSON.parse(await fsp.readFile(path4.join(path4.dirname(sourceFile), "package.json"), "utf8"));
+    const parsed = JSON.parse(await fsp.readFile(path5.join(path5.dirname(sourceFile), "package.json"), "utf8"));
     return parseDependencies(parsed.dependencies);
   } catch (error2) {
     if (error2.code === "ENOENT") return /* @__PURE__ */ new Map();
@@ -8249,7 +8310,7 @@ async function readSiblingDependencies(sourceFile) {
 }
 function makePackageJson(root, dependencies) {
   return JSON.stringify({
-    name: `omega-plugin-${path4.basename(root).replace(/[^a-z0-9_-]/giu, "-")}`,
+    name: `omega-plugin-${path5.basename(root).replace(/[^a-z0-9_-]/giu, "-")}`,
     private: true,
     type: "module",
     dependencies: Object.fromEntries(dependencies)
@@ -8258,7 +8319,7 @@ function makePackageJson(root, dependencies) {
 async function resolvedDependencyVersions(root, dependencies) {
   const resolved = /* @__PURE__ */ new Map();
   for (const name of dependencies.keys()) {
-    const packageFile = path4.join(root, "node_modules", ...name.split("/"), "package.json");
+    const packageFile = path5.join(root, "node_modules", ...name.split("/"), "package.json");
     try {
       const parsed = JSON.parse(await fsp.readFile(packageFile, "utf8"));
       if (!parsed.version) throw new Error("missing version");
@@ -8271,7 +8332,7 @@ async function resolvedDependencyVersions(root, dependencies) {
 }
 async function installDependencies(root, dependencies) {
   if (dependencies.size === 0) return;
-  await fsp.writeFile(path4.join(root, "package.json"), makePackageJson(root, dependencies), { mode: 384 });
+  await fsp.writeFile(path5.join(root, "package.json"), makePackageJson(root, dependencies), { mode: 384 });
   try {
     await execFileAsync("npm", ["install", "--ignore-scripts", "--no-audit", "--no-fund", "--omit=dev", "--package-lock=false", "--prefix", root], {
       cwd: root,
@@ -8288,7 +8349,7 @@ async function installDependencies(root, dependencies) {
   }
 }
 async function compilePlugin(root, sourceFile, extension, format) {
-  const runtimeFile = path4.join(root, format === "cjs" ? "runtime.cjs" : "runtime.mjs");
+  const runtimeFile = path5.join(root, format === "cjs" ? "runtime.cjs" : "runtime.mjs");
   try {
     const { build } = await import("esbuild");
     await build({
@@ -8332,19 +8393,19 @@ async function inferPluginExtension(sourceFile, sourceName) {
   return null;
 }
 async function validatePluginSource(sourceFile, originalFileName, extension) {
-  let stat;
+  let stat2;
   try {
-    stat = await fsp.stat(sourceFile);
+    stat2 = await fsp.stat(sourceFile);
   } catch {
     throw new Error("Plugin file could not be read: file does not exist.");
   }
-  if (!stat.isFile()) throw new Error("Plugin file could not be read: path is not a file.");
+  if (!stat2.isFile()) throw new Error("Plugin file could not be read: path is not a file.");
   try {
     await fsp.access(sourceFile, fs4.constants.R_OK);
   } catch {
     throw new Error("Plugin file could not be read: file is not readable.");
   }
-  if (stat.size === 0) throw new Error("Plugin file is empty.");
+  if (stat2.size === 0) throw new Error("Plugin file is empty.");
   let source;
   try {
     source = await fsp.readFile(sourceFile, "utf8");
@@ -8474,7 +8535,7 @@ ${detail}`);
           logger.warn("[Plugin] Redis manifest purge failed", { sessionId, err: String(err) });
         }
         try {
-          await fsp.rm(path4.dirname(manifestPath(telegramId, sessionId)), { recursive: true, force: true });
+          await fsp.rm(path5.dirname(manifestPath(telegramId, sessionId)), { recursive: true, force: true });
         } catch (err) {
           logger.warn("[Plugin] session plugin tree purge failed", { sessionId, err: String(err) });
         }
@@ -8489,7 +8550,7 @@ ${detail}`);
           logger.warn("[Plugin] Redis manifest write failed; retaining file fallback", { sessionId, err: String(err) });
         }
         const file = manifestPath(telegramId, sessionId);
-        await fsp.mkdir(path4.dirname(file), { recursive: true, mode: 448 });
+        await fsp.mkdir(path5.dirname(file), { recursive: true, mode: 448 });
         const tmp = `${file}.tmp-${process.pid}`;
         await fsp.writeFile(tmp, JSON.stringify(manifests, null, 2), { mode: 384 });
         await fsp.rename(tmp, file);
@@ -8577,7 +8638,7 @@ ${detail}`);
       }
       async verifyDependencyEnvironment(manifest) {
         if (!manifest.runtimeFile || !manifest.dependencyVersions || Object.keys(manifest.dependencyVersions).length === 0) return;
-        const root = path4.dirname(manifest.runtimeFile);
+        const root = path5.dirname(manifest.runtimeFile);
         const resolver = createRequire2(pathToFileURL(manifest.runtimeFile).href);
         const missing = Object.keys(manifest.dependencyVersions).some((name) => {
           try {
@@ -8735,21 +8796,21 @@ ${detail}`);
         return runtime2;
       }
       async installFromFile(telegramId, sessionId, sourceFile, options = {}) {
-        const source = path4.resolve(sourceFile);
+        const source = path5.resolve(sourceFile);
         const originalFileName = String(options.originalFileName ?? "").trim();
         const originalExtension = pluginExtension(originalFileName);
-        const originalHasUnsupportedExtension = Boolean(originalFileName && path4.extname(path4.basename(originalFileName)) && !originalExtension);
+        const originalHasUnsupportedExtension = Boolean(originalFileName && path5.extname(path5.basename(originalFileName)) && !originalExtension);
         if (originalHasUnsupportedExtension) throw unsupportedPluginTypeError();
         const extension = originalExtension ?? pluginExtension(source) ?? await inferPluginExtension(source, originalFileName || source);
         if (!extension) throw unsupportedPluginTypeError();
         await validatePluginSource(source, originalFileName, extension);
         await this.ensureLoaded(telegramId, sessionId, null);
         const requestedId = safePluginId(
-          options.pluginId ?? path4.basename(originalFileName || source, path4.extname(originalFileName || source))
+          options.pluginId ?? path5.basename(originalFileName || source, path5.extname(originalFileName || source))
         );
-        const pluginsDir = path4.dirname(pluginRoot(telegramId, sessionId, requestedId));
-        const stagingRoot = path4.join(pluginsDir, `.staging-${crypto3.randomUUID()}`);
-        const stagingFile = path4.join(stagingRoot, `main${extension}`);
+        const pluginsDir = path5.dirname(pluginRoot(telegramId, sessionId, requestedId));
+        const stagingRoot = path5.join(pluginsDir, `.staging-${crypto3.randomUUID()}`);
+        const stagingFile = path5.join(stagingRoot, `main${extension}`);
         let destinationRoot;
         try {
           await fsp.mkdir(stagingRoot, { recursive: true, mode: 448 });
@@ -8788,7 +8849,7 @@ ${detail}`);
           const collision = commandNames.find((name) => used.has(name));
           if (collision) throw new Error(`Plugin command collision: ${collision}`);
           destinationRoot = pluginRoot(telegramId, sessionId, pluginId);
-          const destination = path4.join(destinationRoot, `main${extension}`);
+          const destination = path5.join(destinationRoot, `main${extension}`);
           await fsp.rename(stagingRoot, destinationRoot);
           const manifest = {
             id: pluginId,
@@ -8799,7 +8860,7 @@ ${detail}`);
             dependencies: [...dependencies.keys()],
             dependencyVersions: Object.fromEntries(dependencies),
             sourceFile: destination,
-            runtimeFile: path4.join(destinationRoot, runtimeFormat === "cjs" ? "runtime.cjs" : "runtime.mjs"),
+            runtimeFile: path5.join(destinationRoot, runtimeFormat === "cjs" ? "runtime.cjs" : "runtime.mjs"),
             runtimeFormat,
             originalFileName: originalFileName || void 0,
             extension,
@@ -8918,7 +8979,7 @@ ${detail}`);
       async purgeSession(telegramId, sessionId) {
         await this.disposeSession(telegramId, sessionId);
         await this.store.purge?.(telegramId, sessionId);
-        await fsp.rm(path4.join(sessionDir(telegramId, sessionId), "plugins"), { recursive: true, force: true }).catch((err) => {
+        await fsp.rm(path5.join(sessionDir(telegramId, sessionId), "plugins"), { recursive: true, force: true }).catch((err) => {
           logger.warn("[Plugin] plugin tree purge failed", { sessionId, err: String(err) });
         });
       }
@@ -12332,10 +12393,10 @@ var init_broadcast_control = __esm({
 
 // src/services/force-join-verifier.ts
 import fs5 from "node:fs";
-import path5 from "node:path";
+import path6 from "node:path";
 function installationFilePath() {
-  const root = process.env.OMEGA_WORKSPACE_ROOT?.trim() || process.env.OMEGA_DATA_DIR?.trim() || path5.join(process.cwd(), "workspace");
-  return path5.resolve(process.env.OMEGA_INSTALLATION_FILE?.trim() || path5.join(root, "installation.json"));
+  const root = process.env.OMEGA_WORKSPACE_ROOT?.trim() || process.env.OMEGA_DATA_DIR?.trim() || path6.join(process.cwd(), "workspace");
+  return path6.resolve(process.env.OMEGA_INSTALLATION_FILE?.trim() || path6.join(root, "installation.json"));
 }
 function readClientToken() {
   const configured2 = process.env.OMEGA_CLIENT_TOKEN?.trim();
@@ -15057,7 +15118,7 @@ var init_session = __esm({
 
 // src/telegram/handlers/bucket.ts
 import fs6 from "fs";
-import path6 from "path";
+import path7 from "path";
 function stopValidationLiveLog(telegramId) {
   const current = liveSubscriptions.get(telegramId);
   if (!current) return;
@@ -15206,7 +15267,7 @@ async function handleExportBucket(ctx, format, bucket = "active") {
       });
       return;
     }
-    const filename = path6.basename(report.filepath);
+    const filename = path7.basename(report.filepath);
     await ctx.replyWithDocument(
       { source: fs6.createReadStream(report.filepath), filename },
       { caption: `\u2705 ${bucket.toUpperCase()} export
@@ -15348,7 +15409,7 @@ __export(tutorials_exports, {
 });
 import fs7 from "fs";
 import fsp2 from "fs/promises";
-import path7 from "path";
+import path8 from "path";
 import crypto6 from "node:crypto";
 function normalizeTutorialCommand(command) {
   return String(command ?? "").trim().toLowerCase().replace(/^[./!]+/u, "");
@@ -15408,7 +15469,7 @@ function loadTutorials() {
   }
 }
 function atomicWriteJson(filePath, data) {
-  fs7.mkdirSync(path7.dirname(filePath), { recursive: true, mode: 448 });
+  fs7.mkdirSync(path8.dirname(filePath), { recursive: true, mode: 448 });
   const tempPath = `${filePath}.tmp-${process.pid}-${Date.now()}`;
   fs7.writeFileSync(tempPath, JSON.stringify(data, null, 2), { mode: 384 });
   fs7.renameSync(tempPath, filePath);
@@ -15490,7 +15551,7 @@ function saveTutorialMedia(command, type, buffer, mimeType) {
   const ext = extensionFor(type, mimeType);
   const safeName2 = cmd.replace(/[^a-z0-9_-]/gi, "") || GAME_API_TUTORIAL;
   const fileName = `${safeName2}-${type}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}.${ext}`;
-  const filePath = path7.join(TUTORIALS_DIR, fileName);
+  const filePath = path8.join(TUTORIALS_DIR, fileName);
   const tempPath = `${filePath}.tmp-${process.pid}`;
   fs7.mkdirSync(TUTORIALS_DIR, { recursive: true, mode: 448 });
   try {
@@ -15541,7 +15602,7 @@ function persistAssetRecord(cmd, type, filePath, mimeType, bytes) {
   }
 }
 async function downloadTelegramFile(fileUrl, maxBytes = MAX_MEDIA_BYTES) {
-  const tempPath = path7.join(
+  const tempPath = path8.join(
     TUTORIALS_DIR,
     `.tmp-dl-${process.pid}-${Date.now()}-${crypto6.randomBytes(4).toString("hex")}`
   );
@@ -15579,9 +15640,9 @@ async function downloadTelegramFile(fileUrl, maxBytes = MAX_MEDIA_BYTES) {
         writer.end();
       });
     }
-    const stat = await fsp2.stat(tempPath);
-    if (stat.size === 0) throw new Error("Download failed: empty file.");
-    return { filePath: tempPath, bytes: stat.size };
+    const stat2 = await fsp2.stat(tempPath);
+    if (stat2.size === 0) throw new Error("Download failed: empty file.");
+    return { filePath: tempPath, bytes: stat2.size };
   } catch (err) {
     try {
       if (fs7.existsSync(tempPath)) fs7.unlinkSync(tempPath);
@@ -15599,21 +15660,21 @@ function saveTutorialMediaFile(command, type, tempFilePath, mimeType) {
     if (type !== "image" && type !== "video") return null;
     if (!mimeType.startsWith(`${type}/`)) return null;
     if (!tempFilePath || !fs7.existsSync(tempFilePath)) return null;
-    let stat;
+    let stat2;
     try {
-      stat = fs7.statSync(tempFilePath);
+      stat2 = fs7.statSync(tempFilePath);
     } catch {
       return null;
     }
-    if (stat.size === 0 || stat.size > MAX_MEDIA_BYTES) return null;
+    if (stat2.size === 0 || stat2.size > MAX_MEDIA_BYTES) return null;
     const ext = extensionFor(type, mimeType);
     const safeName2 = cmd.replace(/[^a-z0-9_-]/gi, "") || GAME_API_TUTORIAL;
     const fileName = `${safeName2}-${type}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}.${ext}`;
-    const filePath = path7.join(TUTORIALS_DIR, fileName);
+    const filePath = path8.join(TUTORIALS_DIR, fileName);
     fs7.mkdirSync(TUTORIALS_DIR, { recursive: true, mode: 448 });
     try {
       fs7.renameSync(tempFilePath, filePath);
-      return persistAssetRecord(cmd, type, filePath, mimeType, stat.size);
+      return persistAssetRecord(cmd, type, filePath, mimeType, stat2.size);
     } catch (err) {
       try {
         if (fs7.existsSync(filePath)) fs7.unlinkSync(filePath);
@@ -15649,8 +15710,8 @@ var init_tutorials = __esm({
     init_logger();
     init_workspace();
     init_menu_registry();
-    TUTORIALS_INDEX = path7.join(WORKSPACE_ROOT, "_platform", "tutorials.json");
-    TUTORIALS_DIR = path7.join(WORKSPACE_ROOT, "_platform", "tutorials");
+    TUTORIALS_INDEX = path8.join(WORKSPACE_ROOT, "_platform", "tutorials.json");
+    TUTORIALS_DIR = path8.join(WORKSPACE_ROOT, "_platform", "tutorials");
     GAME_API_TUTORIAL = "gameapi";
     MAX_MEDIA_BYTES = 20 * 1024 * 1024;
   }
@@ -15659,7 +15720,7 @@ var init_tutorials = __esm({
 // src/services/smart-promotion.ts
 import crypto7 from "node:crypto";
 import fs8 from "node:fs";
-import path8 from "node:path";
+import path9 from "node:path";
 function defaultSchedule(telegramId) {
   return {
     timezone: loadConfig(telegramId).timezone ?? DEFAULT_TIMEZONE,
@@ -15805,8 +15866,8 @@ function createPromotionJob(telegramId, input2) {
   const content = { ...input2.content ?? {} };
   if (!content.text?.trim() && !content.mediaPath) throw new Error("Promotion content must include text or media.");
   if (content.mediaPath) {
-    const stat = fs8.statSync(content.mediaPath);
-    if (!stat.isFile() || stat.size < MIN_MEDIA_BYTES || stat.size > MAX_MEDIA_BYTES2) {
+    const stat2 = fs8.statSync(content.mediaPath);
+    if (!stat2.isFile() || stat2.size < MIN_MEDIA_BYTES || stat2.size > MAX_MEDIA_BYTES2) {
       throw new Error("Promotion media must be a regular file between 1 byte and 25 MB.");
     }
   }
@@ -15868,9 +15929,9 @@ function stopPromotionJob(telegramId, jobId) {
 function removeUnreferencedPromotionMedia(telegramId, job) {
   const mediaPath = job.content.mediaPath;
   if (!mediaPath) return;
-  const managedDir = path8.resolve(promotionMediaDir(telegramId));
-  const resolvedPath = path8.resolve(mediaPath);
-  if (!resolvedPath.startsWith(`${managedDir}${path8.sep}`)) return;
+  const managedDir = path9.resolve(promotionMediaDir(telegramId));
+  const resolvedPath = path9.resolve(mediaPath);
+  if (!resolvedPath.startsWith(`${managedDir}${path9.sep}`)) return;
   const stillReferenced = loadPromotionJobs(telegramId).some((candidate) => candidate.content.mediaPath === mediaPath);
   if (stillReferenced) return;
   try {
@@ -16252,7 +16313,7 @@ var init_smart_promotion = __esm({
 
 // src/telegram/handlers/promotion.ts
 import fs9 from "node:fs";
-import path9 from "node:path";
+import path10 from "node:path";
 function watchPromotionDashboard(ctx, workspaceId, sessionId, jobId) {
   const key2 = `${workspaceId}:${jobId}`;
   if (dashboardSubscriptions.has(key2)) return;
@@ -16409,7 +16470,7 @@ async function handlePromotionWizardMedia(ctx) {
     const fileUrl = await ctx.telegram.getFileLink(media.file_id);
     const downloaded = await downloadTelegramFile(fileUrl.toString(), 20 * 1024 * 1024);
     temporaryPath = downloaded.filePath;
-    const extension = path9.extname(temporaryPath).replace(/^\./u, "") || (message?.photo ? "jpg" : "bin");
+    const extension = path10.extname(temporaryPath).replace(/^\./u, "") || (message?.photo ? "jpg" : "bin");
     storedPath = promotionMediaPath(workspaceId, extension);
     await fs9.promises.rename(temporaryPath, storedPath);
     temporaryPath = void 0;
@@ -16751,7 +16812,7 @@ var init_release_notes = __esm({
 
 // src/services/release-publisher.ts
 import fsp3 from "node:fs/promises";
-import path10 from "node:path";
+import path11 from "node:path";
 function releaseButtonMarkup() {
   const buttons = loadPlatformConfig().releaseButtons ?? [];
   const valid = buttons.filter((button) => Boolean(button && typeof button.label === "string" && typeof button.url === "string")).filter((button) => /^https?:\/\//iu.test(button.url.trim())).slice(0, 12).map((button) => ({
@@ -16795,8 +16856,8 @@ async function readJson(filePath) {
 async function claimPendingRelease() {
   await fsp3.mkdir(RELEASE_DIR, { recursive: true });
   try {
-    const stat = await fsp3.stat(CLAIM_PATH);
-    if (Date.now() - stat.mtimeMs > CLAIM_STALE_MS) {
+    const stat2 = await fsp3.stat(CLAIM_PATH);
+    if (Date.now() - stat2.mtimeMs > CLAIM_STALE_MS) {
       await fsp3.rename(CLAIM_PATH, PENDING_PATH).catch(() => {
       });
     }
@@ -16886,10 +16947,10 @@ var init_release_publisher = __esm({
     init_workspace();
     init_release_notes();
     init_public_command_catalog();
-    RELEASE_DIR = path10.join(WORKSPACE_ROOT, "_platform");
-    PENDING_PATH = path10.join(RELEASE_DIR, "release-pending.json");
-    LAST_PATH = path10.join(RELEASE_DIR, "release-last.json");
-    CLAIM_PATH = path10.join(RELEASE_DIR, "release-sending.json");
+    RELEASE_DIR = path11.join(WORKSPACE_ROOT, "_platform");
+    PENDING_PATH = path11.join(RELEASE_DIR, "release-pending.json");
+    LAST_PATH = path11.join(RELEASE_DIR, "release-last.json");
+    CLAIM_PATH = path11.join(RELEASE_DIR, "release-sending.json");
     CLAIM_STALE_MS = 15 * 6e4;
     MAX_MESSAGE_LENGTH = 3800;
   }
@@ -16898,7 +16959,7 @@ var init_release_publisher = __esm({
 // src/setup/DependencyChecker.ts
 import { execSync as execSync2 } from "child_process";
 import fs10 from "fs";
-import path11 from "path";
+import path12 from "path";
 var DependencyChecker;
 var init_DependencyChecker = __esm({
   "src/setup/DependencyChecker.ts"() {
@@ -16995,18 +17056,18 @@ var init_DependencyChecker = __esm({
         let current = process.cwd();
         let root = current;
         for (let i = 0; i < 5; i++) {
-          if (fs10.existsSync(path11.join(current, "pnpm-workspace.yaml")) || fs10.existsSync(path11.join(current, ".git"))) {
+          if (fs10.existsSync(path12.join(current, "pnpm-workspace.yaml")) || fs10.existsSync(path12.join(current, ".git"))) {
             root = current;
             break;
           }
-          current = path11.dirname(current);
+          current = path12.dirname(current);
         }
-        const botPackagePath = path11.join(root, "artifacts/wa-bridge");
+        const botPackagePath = path12.join(root, "artifacts/wa-bridge");
         const hasBotPackage = fs10.existsSync(botPackagePath);
         return {
           root,
           botPackagePath: hasBotPackage ? botPackagePath : current,
-          isWorkspace: fs10.existsSync(path11.join(root, "pnpm-workspace.yaml"))
+          isWorkspace: fs10.existsSync(path12.join(root, "pnpm-workspace.yaml"))
         };
       }
     };
@@ -17016,7 +17077,7 @@ var init_DependencyChecker = __esm({
 // src/services/deployment.ts
 import { spawn } from "child_process";
 import fs11, { existsSync, rmSync } from "fs";
-import path12 from "path";
+import path13 from "path";
 import { fileURLToPath as fileURLToPath2 } from "url";
 function runLive(cmd, args, cwd, onLine) {
   return new Promise((resolve, reject) => {
@@ -17127,8 +17188,8 @@ async function runDeployment(onProgress) {
       try {
         await safeExec(`git reset --hard ${prevCommit}`, APP_DIR);
         await safeExec(`git clean -fd`, APP_DIR);
-        const DIST_PATH = path12.join(WA_BRIDGE_DIR, "dist");
-        const DIST_OLD = path12.join(WA_BRIDGE_DIR, "dist_old");
+        const DIST_PATH = path13.join(WA_BRIDGE_DIR, "dist");
+        const DIST_OLD = path13.join(WA_BRIDGE_DIR, "dist_old");
         if (existsSync(DIST_OLD)) {
           rmSync(DIST_PATH, { recursive: true, force: true });
           await safeExec(`mv ${DIST_OLD} ${DIST_PATH}`, APP_DIR);
@@ -17145,7 +17206,7 @@ async function runDeployment(onProgress) {
   };
   try {
     log.push("\u{1F50D} <b>[1/13] Verifying repository...</b>");
-    if (!existsSync(path12.join(APP_DIR, ".git"))) return await fail("Verify Repo", new Error(`No git repo at ${APP_DIR}`));
+    if (!existsSync(path13.join(APP_DIR, ".git"))) return await fail("Verify Repo", new Error(`No git repo at ${APP_DIR}`));
     prevCommit = await safeExec("git rev-parse --short HEAD");
     log.push(`\u2705 Repo verified at <code>${prevCommit}</code>`);
     log.push("\u{1F50D} <b>[2/13] Detecting local changes...</b>");
@@ -17192,9 +17253,9 @@ async function runDeployment(onProgress) {
     log.push("\u2705 Cache cleared");
     log.push("\u{1F528} <b>[6/13] Rebuilding wa-bridge...</b>");
     buildStart = Date.now();
-    const DIST_PATH = path12.join(WA_BRIDGE_DIR, "dist");
-    const DIST_NEW = path12.join(WA_BRIDGE_DIR, "dist_new");
-    const DIST_OLD = path12.join(WA_BRIDGE_DIR, "dist_old");
+    const DIST_PATH = path13.join(WA_BRIDGE_DIR, "dist");
+    const DIST_NEW = path13.join(WA_BRIDGE_DIR, "dist_new");
+    const DIST_OLD = path13.join(WA_BRIDGE_DIR, "dist_old");
     rmSync(DIST_NEW, { recursive: true, force: true });
     try {
       await runLive("sh", ["-c", `export OUT_DIR=dist_new && pnpm --filter @workspace/wa-bridge run build`], APP_DIR, (l) => push(`  <code>${l}</code>`));
@@ -17206,7 +17267,7 @@ async function runDeployment(onProgress) {
     log.push(`\u2705 Build done in ${(buildDurationMs / 1e3).toFixed(1)}s`);
     log.push("\u{1F504} <b>[7/13] Performing atomic dist swap...</b>");
     let entryFile = "index.js";
-    if (!existsSync(path12.join(DIST_NEW, entryFile))) {
+    if (!existsSync(path13.join(DIST_NEW, entryFile))) {
       const files = fs11.readdirSync(DIST_NEW);
       const jsFile = files.find((f) => f.endsWith(".js"));
       if (jsFile) entryFile = jsFile;
@@ -17219,7 +17280,7 @@ async function runDeployment(onProgress) {
     await safeExec(`mv ${DIST_NEW} ${DIST_PATH}`, APP_DIR);
     log.push("\u2705 Dist swapped");
     log.push("\u{1F50D} <b>[8/13] Pre-restart health verification...</b>");
-    if (existsSync(path12.join(APP_DIR, "artifacts/workspaces"))) {
+    if (existsSync(path13.join(APP_DIR, "artifacts/workspaces"))) {
       log.push("  - Session registry intact");
     } else {
       log.push("  \u26A0\uFE0F Session registry empty");
@@ -17273,7 +17334,7 @@ var init_deployment = __esm({
     init_logger();
     init_release_publisher();
     init_DependencyChecker();
-    __dirname2 = path12.dirname(fileURLToPath2(import.meta.url));
+    __dirname2 = path13.dirname(fileURLToPath2(import.meta.url));
     workspaceInfo = DependencyChecker.detectWorkspaceInfo();
     APP_DIR = workspaceInfo.root;
     WA_BRIDGE_DIR = workspaceInfo.botPackagePath;
@@ -17478,11 +17539,11 @@ async function mongoHealth() {
 }
 function diskHealth() {
   try {
-    const path36 = process.env.OMEGA_DISK_PATH?.trim() || "/";
-    const stat = fs12.statfsSync(path36);
-    const totalBytes = Number(stat.blocks) * Number(stat.bsize);
-    const freeBytes = Number(stat.bavail) * Number(stat.bsize);
-    return { path: path36, totalBytes, freeBytes, usedBytes: Math.max(0, totalBytes - freeBytes) };
+    const path37 = process.env.OMEGA_DISK_PATH?.trim() || "/";
+    const stat2 = fs12.statfsSync(path37);
+    const totalBytes = Number(stat2.blocks) * Number(stat2.bsize);
+    const freeBytes = Number(stat2.bavail) * Number(stat2.bsize);
+    return { path: path37, totalBytes, freeBytes, usedBytes: Math.max(0, totalBytes - freeBytes) };
   } catch {
     return { path: "/", totalBytes: 0, freeBytes: 0, usedBytes: 0 };
   }
@@ -17531,7 +17592,7 @@ __export(auto_promote_exports, {
   startAutoPromoteScheduler: () => startAutoPromoteScheduler
 });
 import fs13 from "fs";
-import path13 from "path";
+import path14 from "path";
 function readJson2(file, fallback) {
   try {
     if (!fs13.existsSync(file)) return fallback;
@@ -17542,13 +17603,13 @@ function readJson2(file, fallback) {
   }
 }
 function atomicWrite(file, value) {
-  fs13.mkdirSync(path13.dirname(file), { recursive: true, mode: 448 });
+  fs13.mkdirSync(path14.dirname(file), { recursive: true, mode: 448 });
   const tmp = `${file}.tmp-${process.pid}`;
   fs13.writeFileSync(tmp, JSON.stringify(value, null, 2), { mode: 384 });
   fs13.renameSync(tmp, file);
 }
 function sessionJobsPath(telegramId) {
-  return path13.join(WORKSPACE_ROOT, telegramId, "auto-promote.json");
+  return path14.join(WORKSPACE_ROOT, telegramId, "auto-promote.json");
 }
 function normalizeJob(job) {
   return {
@@ -17560,7 +17621,7 @@ function normalizeJob(job) {
 function loadJobs(telegramId) {
   const currentPath = sessionJobsPath(telegramId);
   let jobs = readJson2(currentPath, []);
-  const legacyPath = path13.join("workspaces", telegramId, "auto-promote.json");
+  const legacyPath = path14.join("workspaces", telegramId, "auto-promote.json");
   if (jobs.length === 0 && legacyPath !== currentPath) {
     jobs = readJson2(legacyPath, []);
     if (jobs.length > 0) {
@@ -17897,7 +17958,7 @@ var init_auto_promote = __esm({
     DAY_MS = 864e5;
     AUTO_PROMOTE_JOB_TIMEOUT_MS = Math.max(6e4, Number.parseInt(process.env.AUTO_PROMOTE_JOB_TIMEOUT_MS ?? "900000", 10) || 9e5);
     AUTO_PROMOTE_SESSION_STAGGER_MS = Math.max(0, Number.parseInt(process.env.AUTO_PROMOTE_SESSION_STAGGER_MS ?? "10000", 10) || 1e4);
-    LEGACY_ADMIN_PATH = path13.join("workspaces", "_admin", "auto-promote.json");
+    LEGACY_ADMIN_PATH = path14.join("workspaces", "_admin", "auto-promote.json");
     schedulerStarted2 = false;
     sessionRunQueues = /* @__PURE__ */ new Map();
     globalRunActive = false;
@@ -19282,7 +19343,7 @@ var init_admin = __esm({
 
 // src/services/ideas.ts
 import fs14 from "fs";
-import path14 from "path";
+import path15 from "path";
 function loadIdeas() {
   if (!fs14.existsSync(IDEAS_PATH)) return [];
   try {
@@ -19292,7 +19353,7 @@ function loadIdeas() {
   }
 }
 function saveIdeas(ideas) {
-  fs14.mkdirSync(path14.dirname(IDEAS_PATH), { recursive: true });
+  fs14.mkdirSync(path15.dirname(IDEAS_PATH), { recursive: true });
   fs14.writeFileSync(IDEAS_PATH, JSON.stringify(ideas, null, 2));
 }
 function addIdea(entry) {
@@ -19329,18 +19390,18 @@ var init_ideas = __esm({
     "use strict";
     init_logger();
     init_workspace();
-    IDEAS_PATH = path14.join(WORKSPACE_ROOT, "_platform", "ideas.json");
+    IDEAS_PATH = path15.join(WORKSPACE_ROOT, "_platform", "ideas.json");
   }
 });
 
 // src/telegram/handlers/feedback.ts
 import fs15 from "node:fs";
-import path15 from "node:path";
+import path16 from "node:path";
 function readClientToken2() {
   const configured2 = process.env.OMEGA_CLIENT_TOKEN?.trim();
   if (configured2) return configured2;
-  const root = process.env.OMEGA_WORKSPACE_ROOT?.trim() || process.env.OMEGA_DATA_DIR?.trim() || path15.join(process.cwd(), "workspace");
-  const filePath = path15.resolve(process.env.OMEGA_INSTALLATION_FILE?.trim() || path15.join(root, "installation.json"));
+  const root = process.env.OMEGA_WORKSPACE_ROOT?.trim() || process.env.OMEGA_DATA_DIR?.trim() || path16.join(process.cwd(), "workspace");
+  const filePath = path16.resolve(process.env.OMEGA_INSTALLATION_FILE?.trim() || path16.join(root, "installation.json"));
   try {
     const value = JSON.parse(fs15.readFileSync(filePath, "utf8"));
     return typeof value.clientToken === "string" && value.clientToken.trim() ? value.clientToken.trim() : void 0;
@@ -20393,9 +20454,9 @@ var init_moderation_pipeline = __esm({
 
 // src/services/group-config.ts
 import fs17 from "fs";
-import path16 from "path";
+import path17 from "path";
 function configPath(telegramId, sessionId) {
-  return path16.join(sessionDir(telegramId, sessionId), "group-event-config.json");
+  return path17.join(sessionDir(telegramId, sessionId), "group-event-config.json");
 }
 function loadSessionGroupEventConfig(telegramId, sessionId) {
   const p = configPath(telegramId, sessionId);
@@ -20409,7 +20470,7 @@ function loadSessionGroupEventConfig(telegramId, sessionId) {
 }
 function saveSessionGroupEventConfig(telegramId, sessionId, config2) {
   const p = configPath(telegramId, sessionId);
-  fs17.mkdirSync(path16.dirname(p), { recursive: true });
+  fs17.mkdirSync(path17.dirname(p), { recursive: true });
   fs17.writeFileSync(p, JSON.stringify(config2, null, 2), "utf8");
 }
 function loadGroupEventConfig(telegramId, sessionId, groupJid) {
@@ -20480,7 +20541,7 @@ var init_group_config = __esm({
 
 // src/whatsapp/anti-system/config.ts
 import fs18 from "fs";
-import path17 from "path";
+import path18 from "path";
 function defaultModuleConfig(action = "delete") {
   return {
     enabled: false,
@@ -20519,7 +20580,7 @@ function defaultDemoteConfig() {
   };
 }
 function antiConfigPath(telegramId, sessionId) {
-  return path17.join(sessionDir(telegramId, sessionId), "anti-groups.json");
+  return path18.join(sessionDir(telegramId, sessionId), "anti-groups.json");
 }
 function loadSessionAntiConfig(telegramId, sessionId) {
   const p = antiConfigPath(telegramId, sessionId);
@@ -20533,7 +20594,7 @@ function loadSessionAntiConfig(telegramId, sessionId) {
 }
 function saveSessionAntiConfig(telegramId, sessionId, config2) {
   const p = antiConfigPath(telegramId, sessionId);
-  fs18.mkdirSync(path17.dirname(p), { recursive: true });
+  fs18.mkdirSync(path18.dirname(p), { recursive: true });
   fs18.writeFileSync(p, JSON.stringify(config2, null, 2), "utf8");
 }
 function loadGroupAntiConfig(telegramId, sessionId, groupJid) {
@@ -21803,7 +21864,7 @@ __export(customer_storage_config_exports, {
   validateCustomerRedisUrl: () => validateCustomerRedisUrl
 });
 import fs19 from "node:fs";
-import path18 from "node:path";
+import path19 from "node:path";
 import { Redis as Redis3 } from "ioredis";
 function readEnvLines() {
   try {
@@ -21889,7 +21950,7 @@ var init_customer_storage_config = __esm({
   "src/services/customer-storage-config.ts"() {
     "use strict";
     init_redis_url();
-    ENV_PATH = path18.resolve(".env");
+    ENV_PATH = path19.resolve(".env");
     REDIS_KEYS = /* @__PURE__ */ new Set(["REDIS_URL", "REDIS_CLI_URL", "OMEGA_REDIS_URL"]);
   }
 });
@@ -22445,7 +22506,7 @@ import {
 } from "@omega/client/library";
 import crypto8 from "node:crypto";
 import fs20 from "node:fs";
-import path19 from "node:path";
+import path20 from "node:path";
 function scheduleCustomerRuntimeUpdate(release) {
   if (process.env.OMEGA_CUSTOMER_RUNTIME !== "true" && process.env.OMEGA_RUNTIME_ROLE !== "customer") return;
   if (process.env.OMEGA_AUTO_UPDATE === "false" || release.buildId === scheduledUpdateBuildId) return;
@@ -22767,14 +22828,14 @@ function sourceFor(workspaceId, deploymentId) {
   };
 }
 function installationFilePath2() {
-  const workspaceRoot = path19.resolve(process.env.OMEGA_WORKSPACE_ROOT?.trim() || path19.join(process.cwd(), "workspace"));
-  return path19.resolve(process.env.OMEGA_INSTALLATION_FILE?.trim() || path19.join(workspaceRoot, "installation.json"));
+  const workspaceRoot = path20.resolve(process.env.OMEGA_WORKSPACE_ROOT?.trim() || path20.join(process.cwd(), "workspace"));
+  return path20.resolve(process.env.OMEGA_INSTALLATION_FILE?.trim() || path20.join(workspaceRoot, "installation.json"));
 }
 function loadOrCreateInstallationIdentity() {
   const filePath = installationFilePath2();
   const agentVersion = process.env.OMEGA_AGENT_VERSION?.trim() || "1.2.0";
   const persist = (identity) => {
-    fs20.mkdirSync(path19.dirname(filePath), { recursive: true, mode: 448 });
+    fs20.mkdirSync(path20.dirname(filePath), { recursive: true, mode: 448 });
     const temporary = `${filePath}.${process.pid}.tmp`;
     fs20.writeFileSync(temporary, `${JSON.stringify(identity, null, 2)}\\n`, { mode: 384 });
     fs20.renameSync(temporary, filePath);
@@ -24509,7 +24570,7 @@ Now send the HTTP/HTTPS URL for this button.`, { parse_mode: "HTML" });
       } finally {
         if (tempPath) {
           try {
-            await import("node:fs/promises").then(({ unlink }) => unlink(tempPath).catch(() => {
+            await import("node:fs/promises").then(({ unlink: unlink2 }) => unlink2(tempPath).catch(() => {
             }));
           } catch {
           }
@@ -27351,15 +27412,15 @@ var init_private_mode_guard = __esm({
 // src/services/a2v-store.ts
 import fs22 from "node:fs";
 import fsp4 from "node:fs/promises";
-import path20 from "node:path";
+import path21 from "node:path";
 function storeDir(telegramId, sessionId) {
-  return path20.join(sessionDir(telegramId, sessionId), "a2v");
+  return path21.join(sessionDir(telegramId, sessionId), "a2v");
 }
 function recordPath(telegramId, sessionId) {
-  return path20.join(storeDir(telegramId, sessionId), "record.json");
+  return path21.join(storeDir(telegramId, sessionId), "record.json");
 }
 function componentPath(telegramId, sessionId, kind) {
-  return path20.join(storeDir(telegramId, sessionId), kind === "video" ? "video.mp4" : "audio.source");
+  return path21.join(storeDir(telegramId, sessionId), kind === "video" ? "video.mp4" : "audio.source");
 }
 async function loadA2V(telegramId, sessionId) {
   try {
@@ -27424,7 +27485,7 @@ import sharp2 from "sharp";
 import { execFile as execFile3 } from "node:child_process";
 import { promises as fs23 } from "node:fs";
 import os2 from "node:os";
-import path21 from "node:path";
+import path22 from "node:path";
 import { promisify as promisify3 } from "node:util";
 async function acquireStickerSlot() {
   if (activeStickerConversions >= MAX_CONCURRENT_STICKER_CONVERSIONS) {
@@ -27480,13 +27541,13 @@ async function encodeAnimatedSticker(source, options = {}) {
   }
   let root;
   try {
-    root = await fs23.mkdtemp(path21.join(os2.tmpdir(), `omega-sticker-${safeToken(options.sessionId)}-${safeToken(options.jobId)}-`));
+    root = await fs23.mkdtemp(path22.join(os2.tmpdir(), `omega-sticker-${safeToken(options.sessionId)}-${safeToken(options.jobId)}-`));
   } catch (error2) {
     release();
     throw error2;
   }
-  const inputPath = path21.join(root, `input${extensionFor2(options.inputExtension)}`);
-  const outputPath = path21.join(root, "output.webp");
+  const inputPath = path22.join(root, `input${extensionFor2(options.inputExtension)}`);
+  const outputPath = path22.join(root, "output.webp");
   try {
     await fs23.writeFile(inputPath, source, { mode: 384 });
     let lastBytes = 0;
@@ -27529,8 +27590,8 @@ async function encodeAnimatedSticker(source, options = {}) {
           outputPath
         ], { timeout: 18e4, maxBuffer: 2 * 1024 * 1024 });
       } catch (error2) {
-        const stat = await fs23.stat(outputPath).catch(() => null);
-        if (!stat?.size) throw new Error(`FFmpeg animation conversion failed: ${String(error2).slice(0, 240)}`);
+        const stat2 = await fs23.stat(outputPath).catch(() => null);
+        if (!stat2?.size) throw new Error(`FFmpeg animation conversion failed: ${String(error2).slice(0, 240)}`);
       }
       const output2 = await fs23.readFile(outputPath);
       lastBytes = output2.length;
@@ -27769,7 +27830,7 @@ __export(tg_sticker_exports, {
   resolvePostMedia: () => resolvePostMedia,
   telegramRetryAfterSeconds: () => telegramRetryAfterSeconds
 });
-import path22 from "node:path";
+import path23 from "node:path";
 function parseTgLink(raw) {
   const trimmed = (raw || "").trim();
   if (!trimmed) return null;
@@ -27968,7 +28029,7 @@ async function convertPackSticker(pack, sticker, options) {
     throw new Error("Telegram could not resolve the sticker file.");
   }
   const rawBuffer = await downloadFile(file.file_path, file.file_size);
-  const ext = path22.extname(file.file_path).toLowerCase();
+  const ext = path23.extname(file.file_path).toLowerCase();
   const stickerBuffer = ext === ".webm" || ext === ".mp4" || pack.is_video || sticker.type === "video" ? await videoToSticker(rawBuffer, ext || ".webm", options.sessionId) : await staticToSticker(rawBuffer);
   validateWebP(stickerBuffer);
   const finalBuffer = addStickerMetadata(stickerBuffer, options.packname || "PAPPY", options.author || "OMEGA");
@@ -28652,7 +28713,7 @@ var init_validation = __esm({
 // src/media/DownloadManager.ts
 import fs25 from "node:fs";
 import fsp5 from "node:fs/promises";
-import path23 from "node:path";
+import path24 from "node:path";
 import { createHash as createHash2, randomUUID } from "node:crypto";
 import axios from "axios";
 import PQueue2 from "p-queue";
@@ -28715,7 +28776,7 @@ function resolveCookiesFile() {
     } catch {
     }
   }
-  const platformPath = path23.join(WORKSPACE_ROOT, "_platform", "cookies.txt");
+  const platformPath = path24.join(WORKSPACE_ROOT, "_platform", "cookies.txt");
   try {
     return fs25.existsSync(platformPath) ? platformPath : void 0;
   } catch {
@@ -28914,7 +28975,7 @@ var init_DownloadManager = __esm({
     SEARCH_LIMIT = 5;
     MAX_MEDIA_QUEUE = 80;
     INNERTUBE_STREAM_TIMEOUT_MS = 12e4;
-    TEMP_ROOT = path23.join(WORKSPACE_ROOT, "_platform", "media");
+    TEMP_ROOT = path24.join(WORKSPACE_ROOT, "_platform", "media");
     BING_URL = "https://www.bing.com/images/search";
     PINTEREST_RESOURCE = "https://www.pinterest.com/resource/BaseSearchResource/get/";
     UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36";
@@ -28972,7 +29033,7 @@ var init_DownloadManager = __esm({
           const entries = await fsp5.readdir(this.tempDir);
           for (const name of entries) {
             try {
-              const st = await fsp5.stat(path23.join(this.tempDir, name));
+              const st = await fsp5.stat(path24.join(this.tempDir, name));
               if (st.isFile()) {
                 files++;
                 bytes += st.size;
@@ -28986,7 +29047,7 @@ var init_DownloadManager = __esm({
       }
       // ── Temp file lifecycle ──────────────────────────────────
       tempPath(ext) {
-        return path23.join(this.tempDir, `${Date.now()}-${randomUUID().slice(0, 8)}.${ext}`);
+        return path24.join(this.tempDir, `${Date.now()}-${randomUUID().slice(0, 8)}.${ext}`);
       }
       /** Remove a temp file (never throws). */
       static async cleanup(paths) {
@@ -29005,7 +29066,7 @@ var init_DownloadManager = __esm({
           const entries = await fsp5.readdir(this.tempDir);
           const now3 = Date.now();
           for (const name of entries) {
-            const full = path23.join(this.tempDir, name);
+            const full = path24.join(this.tempDir, name);
             try {
               const st = await fsp5.stat(full);
               if (st.isFile() && now3 - st.mtimeMs > olderThanMs) {
@@ -29348,12 +29409,12 @@ var init_DownloadManager = __esm({
         const finalArgs = { ...args };
         const started = Date.now();
         let attemptNo = 0;
-        let outPath = path23.join(this.tempDir, `${token2}.${ext}`);
+        let outPath = path24.join(this.tempDir, `${token2}.${ext}`);
         const attemptPaths = [];
         try {
           await this.withRetry(`download (${format})`, () => {
             attemptNo += 1;
-            outPath = path23.join(this.tempDir, `${token2}-${attemptNo}.${ext}`);
+            outPath = path24.join(this.tempDir, `${token2}-${attemptNo}.${ext}`);
             attemptPaths.push(outPath);
             return this.withTimeout(
               this.enqueueWork(() => this.runYtDlpWithCookieFallback(url, { ...finalArgs, output: outPath }, "Download"), "Download"),
@@ -29366,7 +29427,7 @@ var init_DownloadManager = __esm({
             const solvedToken = await this.solveFor(url).catch(() => void 0);
             if (solvedToken) {
               attemptNo += 1;
-              const assistedPath = path23.join(this.tempDir, `${token2}-assist-${attemptNo}.${ext}`);
+              const assistedPath = path24.join(this.tempDir, `${token2}-assist-${attemptNo}.${ext}`);
               attemptPaths.push(assistedPath);
               try {
                 await this.withTimeout(
@@ -29376,7 +29437,7 @@ var init_DownloadManager = __esm({
                 );
                 outPath = assistedPath;
                 await _DownloadManager.cleanup(attemptPaths.filter((p) => p !== assistedPath));
-                logger.info("[Media] solver-assisted download succeeded", { file: path23.basename(assistedPath) });
+                logger.info("[Media] solver-assisted download succeeded", { file: path24.basename(assistedPath) });
               } catch (assistErr) {
                 logger.warn("[Media] solver-assisted retry failed \u2014 stopping with the original bot-check error", {
                   err: String(assistErr)
@@ -29396,16 +29457,16 @@ var init_DownloadManager = __esm({
         if (!fs25.existsSync(outPath)) {
           throw new MediaDownloadError("Download finished but produced no file.", "download-failed");
         }
-        const stat = await fsp5.stat(outPath);
-        if (stat.size === 0) {
+        const stat2 = await fsp5.stat(outPath);
+        if (stat2.size === 0) {
           await _DownloadManager.cleanup([outPath]);
           throw new MediaDownloadError("Downloaded file is empty.", "download-failed");
         }
         const cap = sizeCapFor(kind);
-        if (stat.size > cap) {
+        if (stat2.size > cap) {
           await _DownloadManager.cleanup([outPath]);
           throw new MediaDownloadError(
-            `File is ${(stat.size / 1024 / 1024).toFixed(1)} MB \u2014 exceeds the ${Math.round(cap / 1024 / 1024)} MB delivery limit.`,
+            `File is ${(stat2.size / 1024 / 1024).toFixed(1)} MB \u2014 exceeds the ${Math.round(cap / 1024 / 1024)} MB delivery limit.`,
             "too-large"
           );
         }
@@ -29426,7 +29487,7 @@ var init_DownloadManager = __esm({
           filePath: outPath,
           fileName: `${title2}.${realExt}`,
           mimetype,
-          sizeBytes: stat.size,
+          sizeBytes: stat2.size,
           title: info2?.title,
           durationSeconds: info2?.duration
         };
@@ -29443,9 +29504,9 @@ var init_DownloadManager = __esm({
         }
         logger.info("[Media] download complete", {
           kind,
-          bytes: stat.size,
+          bytes: stat2.size,
           ms: Date.now() - started,
-          file: path23.basename(outPath)
+          file: path24.basename(outPath)
         });
         return [out];
       }
@@ -29546,15 +29607,15 @@ var init_DownloadManager = __esm({
           const ext = extFor(kind, contentType, kind === "image" ? "jpg" : kind === "video" ? "mp4" : kind === "audio" ? "mp3" : "bin");
           outPath = this.tempPath(ext);
           await pipeline(res.data, fs25.createWriteStream(outPath));
-          const stat = await fsp5.stat(outPath);
-          if (stat.size === 0) {
+          const stat2 = await fsp5.stat(outPath);
+          if (stat2.size === 0) {
             await _DownloadManager.cleanup([outPath]);
             throw new MediaDownloadError("Remote file is empty.", "missing");
           }
-          if (stat.size > cap) {
+          if (stat2.size > cap) {
             await _DownloadManager.cleanup([outPath]);
             throw new MediaDownloadError(
-              `Downloaded ${(stat.size / 1024 / 1024).toFixed(1)} MB \u2014 exceeds the ${Math.round(cap / 1024 / 1024)} MB delivery limit.`,
+              `Downloaded ${(stat2.size / 1024 / 1024).toFixed(1)} MB \u2014 exceeds the ${Math.round(cap / 1024 / 1024)} MB delivery limit.`,
               "too-large"
             );
           }
@@ -29569,21 +29630,21 @@ var init_DownloadManager = __esm({
           const sig = validation.signature;
           const realKind = sig?.kind ?? kind;
           const realExt = sig?.ext ?? ext;
-          if (sig && stat.size > sizeCapFor(sig.kind)) {
+          if (sig && stat2.size > sizeCapFor(sig.kind)) {
             await _DownloadManager.cleanup([outPath]);
             throw new MediaDownloadError(
-              `Downloaded ${(stat.size / 1024 / 1024).toFixed(1)} MB \u2014 exceeds the ${Math.round(sizeCapFor(sig.kind) / 1024 / 1024)} MB delivery limit.`,
+              `Downloaded ${(stat2.size / 1024 / 1024).toFixed(1)} MB \u2014 exceeds the ${Math.round(sizeCapFor(sig.kind) / 1024 / 1024)} MB delivery limit.`,
               "too-large"
             );
           }
           const mime = sig?.mime ?? (contentType || this.mimetypeFor(realKind, realExt));
-          const fileName = `${safeName(path23.basename(url.split("?")[0] ?? ""), "media") || "media"}.${realExt}`;
+          const fileName = `${safeName(path24.basename(url.split("?")[0] ?? ""), "media") || "media"}.${realExt}`;
           return {
             kind: realKind,
             filePath: outPath,
             fileName,
             mimetype: mime,
-            sizeBytes: stat.size
+            sizeBytes: stat2.size
           };
         } catch (err) {
           await _DownloadManager.cleanup([outPath]);
@@ -29614,8 +29675,8 @@ var init_DownloadManager = __esm({
         });
         try {
           await this.enqueueWork(() => this.withTimeout(run(), 2e5, `${label} timed out.`), label);
-          const stat = await fsp5.stat(outPath);
-          if (stat.size === 0) throw new MediaDownloadError(`${label} produced an empty file.`, "download-failed");
+          const stat2 = await fsp5.stat(outPath);
+          if (stat2.size === 0) throw new MediaDownloadError(`${label} produced an empty file.`, "download-failed");
         } catch (err) {
           await _DownloadManager.cleanup([outPath]);
           throw err instanceof MediaDownloadError ? err : new MediaDownloadError(`${label} failed.`, "download-failed");
@@ -29668,14 +29729,14 @@ var init_DownloadManager = __esm({
       async transcodeToVoice(inputPath, title2) {
         const outPath = this.tempPath("ogg");
         await this.runFfmpeg(["-y", "-i", inputPath, "-vn", "-c:a", "libopus", "-b:a", "96k", "-f", "ogg", outPath], outPath, "Voice-note conversion");
-        const stat = await fsp5.stat(outPath);
+        const stat2 = await fsp5.stat(outPath);
         const visual = await this.voiceWaveform(outPath);
         return {
           kind: "voice",
           filePath: outPath,
           fileName: `${safeName(title2 ?? "voice-note", "voice-note")}.ogg`,
           mimetype: "audio/ogg; codecs=opus",
-          sizeBytes: stat.size,
+          sizeBytes: stat2.size,
           title: title2,
           ...visual ? { waveform: visual.waveform, durationSeconds: visual.durationSeconds } : {}
         };
@@ -29688,13 +29749,13 @@ var init_DownloadManager = __esm({
       async extractAudio(inputPath, title2) {
         const outPath = this.tempPath("mp3");
         await this.runFfmpeg(["-y", "-i", inputPath, "-vn", "-c:a", "libmp3lame", "-q:a", "2", outPath], outPath, "Audio extraction");
-        const stat = await fsp5.stat(outPath);
+        const stat2 = await fsp5.stat(outPath);
         return {
           kind: "audio",
           filePath: outPath,
           fileName: `${safeName(title2 ?? "audio", "audio")}.mp3`,
           mimetype: "audio/mpeg",
-          sizeBytes: stat.size,
+          sizeBytes: stat2.size,
           title: title2
         };
       }
@@ -29712,13 +29773,13 @@ var init_DownloadManager = __esm({
           outPath,
           "MP4 conversion"
         );
-        const stat = await fsp5.stat(outPath);
+        const stat2 = await fsp5.stat(outPath);
         return {
           kind: "video",
           filePath: outPath,
           fileName: `${safeName(title2 ?? "video", "video")}.mp4`,
           mimetype: "video/mp4",
-          sizeBytes: stat.size,
+          sizeBytes: stat2.size,
           title: title2
         };
       }
@@ -29734,13 +29795,13 @@ var init_DownloadManager = __esm({
           outPath,
           "A2V audio injection"
         );
-        const stat = await fsp5.stat(outPath);
+        const stat2 = await fsp5.stat(outPath);
         return {
           kind: "video",
           filePath: outPath,
           fileName: `${safeName(title2 ?? "a2v-video", "a2v-video")}.mp4`,
           mimetype: "video/mp4",
-          sizeBytes: stat.size,
+          sizeBytes: stat2.size,
           title: title2
         };
       }
@@ -30126,9 +30187,9 @@ async function withMediaSendTimeout(promise, timeoutMs2 = MEDIA_SEND_TIMEOUT_MS)
 }
 async function loadBuffer(item) {
   const buffer = item.buffer ?? (item.filePath ? await (async () => {
-    const stat = await fs26.stat(item.filePath);
-    if (stat.size > MAX_SEND_BUFFER) {
-      throw new Error(`File is ${(stat.size / 1024 / 1024).toFixed(1)} MB \u2014 too large to send.`);
+    const stat2 = await fs26.stat(item.filePath);
+    if (stat2.size > MAX_SEND_BUFFER) {
+      throw new Error(`File is ${(stat2.size / 1024 / 1024).toFixed(1)} MB \u2014 too large to send.`);
     }
     return fs26.readFile(item.filePath);
   })() : null);
@@ -30368,9 +30429,9 @@ var init_MediaManager = __esm({
           if (!validation.valid) {
             return { success: false, error: `Media failed validation (${validation.reason}).` };
           }
-          const stat = await fsp6.stat(media.filePath);
-          if (stat.size > MAX_PREPARE_BUFFER) {
-            return { success: false, error: `File is ${(stat.size / 1024 / 1024).toFixed(1)} MB \u2014 too large to send.` };
+          const stat2 = await fsp6.stat(media.filePath);
+          if (stat2.size > MAX_PREPARE_BUFFER) {
+            return { success: false, error: `File is ${(stat2.size / 1024 / 1024).toFixed(1)} MB \u2014 too large to send.` };
           }
           const buffer = await fsp6.readFile(media.filePath);
           const sig = validation.signature;
@@ -31551,13 +31612,13 @@ async function cmdCv(ctx) {
     } else {
       outputPath = dm.tempPath("png");
       await sharp3(bytes).png().toFile(outputPath);
-      const stat = await fsp7.stat(outputPath);
+      const stat2 = await fsp7.stat(outputPath);
       converted = {
         kind: "image",
         filePath: outputPath,
         fileName: "converted-sticker.png",
         mimetype: "image/png",
-        sizeBytes: stat.size,
+        sizeBytes: stat2.size,
         title: "Converted sticker"
       };
     }
@@ -32693,7 +32754,7 @@ var require_package = __commonJS({
   "package.json"(exports, module) {
     module.exports = {
       name: "@workspace/wa-bridge",
-      version: "1.2.27",
+      version: "1.2.28",
       description: "Telegram \u2194 WhatsApp Automation Bridge \u2014 Production-Grade Multi-Device Control Center",
       type: "module",
       main: "dist/index.js",
@@ -33232,9 +33293,9 @@ var init_actions = __esm({
 
 // src/whatsapp/anti-system/pending-restores.ts
 import fs27 from "fs";
-import path24 from "path";
+import path25 from "path";
 function restorePath(sessionId, telegramId) {
-  return path24.join(sessionDir(telegramId, sessionId), "pending-restores.json");
+  return path25.join(sessionDir(telegramId, sessionId), "pending-restores.json");
 }
 function loadAll(sessionId, telegramId) {
   const p = restorePath(sessionId, telegramId);
@@ -33248,7 +33309,7 @@ function loadAll(sessionId, telegramId) {
 }
 function saveAll(sessionId, telegramId, restores) {
   const p = restorePath(sessionId, telegramId);
-  fs27.mkdirSync(path24.dirname(p), { recursive: true });
+  fs27.mkdirSync(path25.dirname(p), { recursive: true });
   fs27.writeFileSync(p, JSON.stringify(restores, null, 2), "utf8");
 }
 function addPendingRestore(sessionId, telegramId, entry) {
@@ -37895,9 +37956,9 @@ var init_poll_engine = __esm({
 
 // src/whatsapp/games/poll-engine/persistence.ts
 import fs28 from "fs";
-import path25 from "path";
+import path26 from "path";
 function gamesFilePath(telegramId, sessionId) {
-  return path25.join(sessionDir(telegramId, sessionId), "poll-games.json");
+  return path26.join(sessionDir(telegramId, sessionId), "poll-games.json");
 }
 function scopeKey4(snapshot) {
   return `${snapshot.scope.sessionId}:${snapshot.scope.chatJid}:${snapshot.type}`;
@@ -37916,7 +37977,7 @@ function loadFile(telegramId, sessionId) {
 function writeFile(telegramId, sessionId, data) {
   try {
     const p = gamesFilePath(telegramId, sessionId);
-    fs28.mkdirSync(path25.dirname(p), { recursive: true });
+    fs28.mkdirSync(path26.dirname(p), { recursive: true });
     const tmp = `${p}.tmp-${process.pid}`;
     fs28.writeFileSync(tmp, JSON.stringify(data, null, 2));
     fs28.renameSync(tmp, p);
@@ -38556,7 +38617,7 @@ __export(event_handlers_exports, {
   unregisterSessionOwner: () => unregisterSessionOwner
 });
 import fsp8 from "node:fs/promises";
-import path26 from "path";
+import path27 from "path";
 import crypto14 from "crypto";
 function explainWhatsAppOperationError(error2, operation) {
   const raw = String(error2);
@@ -39966,7 +40027,6 @@ async function processMessageWithConfig(sessionId, telegramId, msg, socket, repl
         sender: normalizeWhatsAppNumber(senderJid),
         mode: config2.publicMode ? "public (pair/help/menu only)" : "private"
       });
-      await reply(warningCard("ACCESS NOT ALLOCATED", "This WhatsApp bot is restricted to its owner and approved sudo users. Ask the owner to allocate access, then try again."));
       return;
     }
   }
@@ -40029,8 +40089,8 @@ async function processMessageWithConfig(sessionId, telegramId, msg, socket, repl
       const media = await extractMedia();
       if (media) {
         const filename = `idea_${Date.now()}_${Math.floor(Math.random() * 1e3)}.${media.mimeType.split("/")[1]}`;
-        const filePath = path26.join(process.cwd(), "workspaces", "_platform", "media", filename);
-        await fsp8.mkdir(path26.dirname(filePath), { recursive: true });
+        const filePath = path27.join(process.cwd(), "workspaces", "_platform", "media", filename);
+        await fsp8.mkdir(path27.dirname(filePath), { recursive: true });
         await fsp8.writeFile(filePath, media.buffer);
         attachments.push({ type: media.type, filePath, mimeType: media.mimeType });
       }
@@ -40833,9 +40893,9 @@ Examples: Africa/Lagos, Europe/London, America/New_York`));
         await reply(warningCard("REPLY TO MEDIA", `Reply to a ${expected} with ${config2.prefix}${command}.`));
         break;
       }
-      const dir = path26.join(sessionDir(telegramId, sessionId), "menu-media");
+      const dir = path27.join(sessionDir(telegramId, sessionId), "menu-media");
       await fsp8.mkdir(dir, { recursive: true });
-      const filePath = path26.join(dir, `menu.${expected === "image" ? "jpg" : "mp4"}`);
+      const filePath = path27.join(dir, `menu.${expected === "image" ? "jpg" : "mp4"}`);
       await fsp8.writeFile(filePath, media.buffer);
       updateSessionMeta(telegramId, sessionId, { menuMedia: { type: expected, filePath, mimeType: media.mimeType } });
       await reply(successCard("MENU MEDIA SET", `Menus will now render with this ${expected}.`));
@@ -43172,7 +43232,7 @@ __export(socket_manager_exports, {
 import makeWASocket from "@crysnovax/baileys";
 import * as Baileys from "@crysnovax/baileys";
 import fs30 from "node:fs";
-import path27 from "node:path";
+import path28 from "node:path";
 import { Boom } from "@hapi/boom";
 import P from "pino";
 import QRCode from "qrcode";
@@ -43413,6 +43473,9 @@ function allowReconnect(sessionId) {
   window.attempts += 1;
   return window.attempts <= MAX_RECONNECTS_PER_WINDOW;
 }
+function profilePictureCacheKey(sessionId, candidates) {
+  return [sessionId, ...candidates].join(String.fromCharCode(0));
+}
 function recoveryAlertsEnabled() {
   return /^(1|true|yes|on)$/iu.test(process.env.WA_NOTIFY_RECOVERY_ALERTS ?? "false");
 }
@@ -43434,7 +43497,7 @@ function hasRegisteredAuth(sessionId, telegramId) {
   if (!owner) return false;
   try {
     const authDir = sessionAuthDir(owner, sessionId);
-    const creds = JSON.parse(fs30.readFileSync(path27.join(authDir, "creds.json"), "utf8"));
+    const creds = JSON.parse(fs30.readFileSync(path28.join(authDir, "creds.json"), "utf8"));
     return creds.registered === true;
   } catch {
     return false;
@@ -43475,27 +43538,61 @@ function isFrozen(sessionId) {
   return owner ? isExplicitlyFrozen(loadSessionMeta(owner, sessionId)) : false;
 }
 async function fetchProfilePicture(sessionId, jid) {
-  const cached = pfpCache.get(jid);
-  if (cached && Date.now() < cached.expires) {
-    return cached.buffer;
-  }
   const socket = getSocket(sessionId);
   if (!socket) return null;
+  const candidates = /* @__PURE__ */ new Set();
+  const normalized = normalizeJid(jid);
+  if (normalized) candidates.add(normalized);
   try {
-    const url = await socket.profilePictureUrl(jid, "image").catch(() => null);
-    if (!url) return null;
-    const res = await fetch(url);
-    if (!res.ok) return null;
-    const buffer = Buffer.from(await res.arrayBuffer());
-    pfpCache.set(jid, {
-      url,
-      buffer,
-      expires: Date.now() + PFP_CACHE_TTL
+    for (const variant of await identityVariants(socket, jid)) {
+      if (variant) candidates.add(normalizeJid(variant));
+    }
+  } catch {
+  }
+  const candidateList = [...candidates].filter(Boolean);
+  if (candidateList.length === 0) return null;
+  const cacheKey2 = profilePictureCacheKey(sessionId, candidateList);
+  const cached = pfpCache.get(cacheKey2);
+  if (cached && Date.now() < cached.expires) return cached.buffer;
+  const inflight3 = pfpInflight.get(cacheKey2);
+  if (inflight3) return inflight3;
+  const request = (async () => {
+    for (const candidate of candidateList) {
+      for (const type of ["image", "preview"]) {
+        try {
+          const url = await socket.profilePictureUrl(candidate, type).catch(() => null);
+          if (!url || typeof url !== "string") continue;
+          const res = await fetch(url, {
+            redirect: "follow",
+            signal: AbortSignal.timeout(PFP_FETCH_TIMEOUT_MS)
+          });
+          if (!res.ok) continue;
+          const contentType = res.headers.get("content-type") ?? "";
+          if (contentType && !/^image\//iu.test(contentType)) continue;
+          const buffer = Buffer.from(await res.arrayBuffer());
+          if (buffer.length === 0) continue;
+          pfpCache.set(cacheKey2, {
+            url,
+            buffer,
+            expires: Date.now() + PFP_CACHE_TTL
+          });
+          return buffer;
+        } catch {
+        }
+      }
+    }
+    logger.debug("[SocketManager] No profile picture available", {
+      sessionId,
+      requestedJid: jid,
+      candidates: candidateList.length
     });
-    return buffer;
-  } catch (err) {
-    logger.warn("[SocketManager] PFP fetch failed", { jid, err: String(err) });
     return null;
+  })();
+  pfpInflight.set(cacheKey2, request);
+  try {
+    return await request;
+  } finally {
+    if (pfpInflight.get(cacheKey2) === request) pfpInflight.delete(cacheKey2);
   }
 }
 async function freezeSession2(sessionId) {
@@ -43571,6 +43668,7 @@ async function initSocket(meta, opts = {}) {
     normalizedPhone = normalizePairingPhone(opts.phone ?? meta.phone);
   }
   const authDir = sessionAuthDir(telegramId, sessionId);
+  await pruneStaleDeviceListFiles(authDir);
   const { state, saveCreds } = await useMultiFileAuthState2(authDir);
   const { version } = await fetchLatestBaileysVersion2();
   const baseSocket = makeWASocket({
@@ -44110,6 +44208,10 @@ async function reinitSocket(meta, opts = {}) {
 async function recoverUnhealthySession(snapshot) {
   const sessionId = snapshot.sessionId;
   if (recoveryInProgress.has(sessionId)) return;
+  if (isSessionBackgroundCooled(sessionId)) {
+    logger.info("[SessionHealth] Recovery deferred during protocol cooldown", { sessionId });
+    return;
+  }
   const telegramId = snapshot.telegramId ?? findSessionOwner(sessionId);
   if (!telegramId) return;
   const meta = loadSessionMeta(telegramId, sessionId);
@@ -44190,7 +44292,7 @@ async function closeAllSockets() {
   ownerReconnectLeases.clear();
   await Promise.allSettled([...registry.keys()].map((sessionId) => closeSocket(sessionId)));
 }
-var DisconnectReason2, useMultiFileAuthState2, fetchLatestBaileysVersion2, makeCacheableSignalKeyStore2, GROUP_METADATA_TTL_MS, GROUP_METADATA_MAX_ENTRIES, groupMetadataCaches, registry, reconnectTimers, socketGenerations, reconnectWindows, ownerReconnectLeases, purgedSessions, recoveryInProgress, CUSTOM_PAIRING_CODE, pfpCache, PFP_CACHE_TTL, MAX_RECONNECTS_PER_WINDOW, RECONNECT_WINDOW_MS, RECONNECT_LIMIT_COOLDOWN_MS, FORBIDDEN_COOLDOWN_MS, RATE_LIMIT_COOLDOWN_MS, MAX_REGISTERED_RECOVERY_DELAY_MS, MAX_OWNER_RECONNECTS, OWNER_RECONNECT_SPACING_MS, MAX_GLOBAL_RECOVERIES, activeRecoveryAttempts, recoveryQueue, cryptoFailureWindows, cryptoQuarantined, cryptoPressureAlerted, MAX_CRYPTO_FAILURES, CRYPTO_FAILURE_WINDOW_MS, CRYPTO_QUARANTINE_MS, globalEventCallback, alertCallback, connectedCallback;
+var DisconnectReason2, useMultiFileAuthState2, fetchLatestBaileysVersion2, makeCacheableSignalKeyStore2, GROUP_METADATA_TTL_MS, GROUP_METADATA_MAX_ENTRIES, groupMetadataCaches, registry, reconnectTimers, socketGenerations, reconnectWindows, ownerReconnectLeases, purgedSessions, recoveryInProgress, CUSTOM_PAIRING_CODE, pfpCache, pfpInflight, PFP_CACHE_TTL, PFP_FETCH_TIMEOUT_MS, MAX_RECONNECTS_PER_WINDOW, RECONNECT_WINDOW_MS, RECONNECT_LIMIT_COOLDOWN_MS, FORBIDDEN_COOLDOWN_MS, RATE_LIMIT_COOLDOWN_MS, MAX_REGISTERED_RECOVERY_DELAY_MS, MAX_OWNER_RECONNECTS, OWNER_RECONNECT_SPACING_MS, MAX_GLOBAL_RECOVERIES, activeRecoveryAttempts, recoveryQueue, cryptoFailureWindows, cryptoQuarantined, cryptoPressureAlerted, MAX_CRYPTO_FAILURES, CRYPTO_FAILURE_WINDOW_MS, CRYPTO_QUARANTINE_MS, globalEventCallback, alertCallback, connectedCallback;
 var init_socket_manager = __esm({
   "src/whatsapp/socket-manager.ts"() {
     "use strict";
@@ -44199,8 +44301,10 @@ var init_socket_manager = __esm({
     init_error_recovery();
     init_logger();
     init_delay();
+    init_auth_store_maintenance();
     init_message_store();
     init_country_codes();
+    init_identity();
     init_personal_engine();
     init_welcome_batcher();
     init_session_pressure();
@@ -44221,7 +44325,9 @@ var init_socket_manager = __esm({
     recoveryInProgress = /* @__PURE__ */ new Set();
     CUSTOM_PAIRING_CODE = "PAPPYBOT";
     pfpCache = /* @__PURE__ */ new Map();
+    pfpInflight = /* @__PURE__ */ new Map();
     PFP_CACHE_TTL = 60 * 60 * 1e3;
+    PFP_FETCH_TIMEOUT_MS = 15e3;
     MAX_RECONNECTS_PER_WINDOW = 8;
     RECONNECT_WINDOW_MS = 10 * 6e4;
     RECONNECT_LIMIT_COOLDOWN_MS = Math.max(6e4, Number.parseInt(process.env.WA_RECONNECT_LIMIT_COOLDOWN_MS ?? "300000", 10) || 3e5);
@@ -44349,7 +44455,7 @@ __export(workspace_exports, {
   workspaceDir: () => workspaceDir
 });
 import fs31 from "fs";
-import path28 from "path";
+import path29 from "path";
 import { fileURLToPath as fileURLToPath3 } from "url";
 import os3 from "os";
 import { execFile as execFile4 } from "node:child_process";
@@ -44357,11 +44463,11 @@ import { promisify as promisify4 } from "node:util";
 function migrateLegacyWorkspaces() {
   try {
     const envLegacy = process.env.OMEGA_LEGACY_ROOT?.trim();
-    const defaultRoot = path28.join(os3.homedir(), ".omega-v1", "workspaces");
-    const candidates = envLegacy ? [path28.resolve(envLegacy)] : WORKSPACE_ROOT === defaultRoot ? [
-      path28.resolve(__dirname3, "../../../workspaces"),
+    const defaultRoot = path29.join(os3.homedir(), ".omega-v1", "workspaces");
+    const candidates = envLegacy ? [path29.resolve(envLegacy)] : WORKSPACE_ROOT === defaultRoot ? [
+      path29.resolve(__dirname3, "../../../workspaces"),
       // bundled build: artifacts/workspaces
-      path28.resolve(__dirname3, "../../workspaces")
+      path29.resolve(__dirname3, "../../workspaces")
       // dev/tsx: wa-bridge/workspaces
     ] : [];
     const legacy = candidates.find((c) => {
@@ -44373,7 +44479,7 @@ function migrateLegacyWorkspaces() {
     fs31.mkdirSync(WORKSPACE_ROOT, { recursive: true });
     for (const entry of fs31.readdirSync(legacy)) {
       if (entry === ".gitkeep") continue;
-      fs31.cpSync(path28.join(legacy, entry), path28.join(WORKSPACE_ROOT, entry), { recursive: true });
+      fs31.cpSync(path29.join(legacy, entry), path29.join(WORKSPACE_ROOT, entry), { recursive: true });
     }
     logger.warn(
       `[Workspace] Migrated session data from legacy in-repo path ${legacy} \u2192 ${WORKSPACE_ROOT}. Sessions are now stored outside the git repository and will survive git pull/reset/clean.`
@@ -44389,9 +44495,9 @@ function ensurePrivatePath(p) {
   }
 }
 function atomicWriteJson2(p, data) {
-  fs31.mkdirSync(path28.dirname(p), { recursive: true, mode: 448 });
+  fs31.mkdirSync(path29.dirname(p), { recursive: true, mode: 448 });
   try {
-    fs31.chmodSync(path28.dirname(p), 448);
+    fs31.chmodSync(path29.dirname(p), 448);
   } catch {
   }
   const tmp = `${p}.tmp-${process.pid}`;
@@ -44407,40 +44513,40 @@ function atomicWriteJson2(p, data) {
   }
 }
 function workspaceDir(telegramId) {
-  return path28.join(WORKSPACE_ROOT, telegramId);
+  return path29.join(WORKSPACE_ROOT, telegramId);
 }
 function sessionDir(telegramId, sessionId) {
-  return path28.join(workspaceDir(telegramId), "sessions", sessionId);
+  return path29.join(workspaceDir(telegramId), "sessions", sessionId);
 }
 function sessionAuthDir(telegramId, sessionId) {
-  return path28.join(sessionDir(telegramId, sessionId), "auth");
+  return path29.join(sessionDir(telegramId, sessionId), "auth");
 }
 function sessionLogDir(telegramId, sessionId) {
-  return path28.join(sessionDir(telegramId, sessionId), "logs");
+  return path29.join(sessionDir(telegramId, sessionId), "logs");
 }
 function bucketPath(telegramId, bucket) {
-  return path28.join(workspaceDir(telegramId), "buckets", `${bucket}.json`);
+  return path29.join(workspaceDir(telegramId), "buckets", `${bucket}.json`);
 }
 function joinJobsPath(telegramId) {
-  return path28.join(workspaceDir(telegramId), "join-jobs.json");
+  return path29.join(workspaceDir(telegramId), "join-jobs.json");
 }
 function promotionJobsPath(telegramId) {
-  return path28.join(workspaceDir(telegramId), "promotion-jobs.json");
+  return path29.join(workspaceDir(telegramId), "promotion-jobs.json");
 }
 function promotionMediaDir(telegramId) {
-  const dir = path28.join(workspaceDir(telegramId), "promotion-media");
+  const dir = path29.join(workspaceDir(telegramId), "promotion-media");
   fs31.mkdirSync(dir, { recursive: true, mode: 448 });
   return dir;
 }
 function promotionMediaPath(telegramId, extension) {
   const safeExtension = String(extension || "bin").replace(/[^a-z0-9]/giu, "").slice(0, 8) || "bin";
-  return path28.join(promotionMediaDir(telegramId), `${Date.now()}-${process.pid}-${Math.random().toString(36).slice(2, 10)}.${safeExtension}`);
+  return path29.join(promotionMediaDir(telegramId), `${Date.now()}-${process.pid}-${Math.random().toString(36).slice(2, 10)}.${safeExtension}`);
 }
 function joinStatePath(telegramId) {
-  return path28.join(workspaceDir(telegramId), "join-state.json");
+  return path29.join(workspaceDir(telegramId), "join-state.json");
 }
 function masterGenerationPath(telegramId) {
-  return path28.join(workspaceDir(telegramId), "master-generation.json");
+  return path29.join(workspaceDir(telegramId), "master-generation.json");
 }
 function currentMasterGeneration(telegramId) {
   const value = readJsonFile(masterGenerationPath(telegramId), 1);
@@ -44457,7 +44563,7 @@ function normalizeCollectedLink(rawLink) {
   return match?.[1] ? `https://chat.whatsapp.com/${match[1]}` : input2.replace(/[?#].*$/u, "").replace(/\/$/u, "");
 }
 function configPath2(telegramId) {
-  return path28.join(workspaceDir(telegramId), "config.json");
+  return path29.join(workspaceDir(telegramId), "config.json");
 }
 function defaultConfig(telegramId) {
   return {
@@ -44508,7 +44614,7 @@ function defaultConfig(telegramId) {
 function initWorkspace(telegramId) {
   const dir = workspaceDir(telegramId);
   for (const sub of ["sessions", "buckets", "exports"]) {
-    fs31.mkdirSync(path28.join(dir, sub), { recursive: true });
+    fs31.mkdirSync(path29.join(dir, sub), { recursive: true });
   }
   const config2 = defaultConfig(telegramId);
   const workspace = {
@@ -44585,7 +44691,7 @@ function updateConfig(telegramId, patch) {
   return updated;
 }
 function sessionConfigPath(telegramId, sessionId) {
-  return path28.join(sessionDir(telegramId, sessionId), "config.json");
+  return path29.join(sessionDir(telegramId, sessionId), "config.json");
 }
 function loadSessionConfig(telegramId, sessionId) {
   const base = loadConfig(telegramId);
@@ -44797,7 +44903,7 @@ function updateSessionConfig(telegramId, sessionId, patch) {
   return updated;
 }
 function sessionMetaPath(telegramId, sessionId) {
-  return path28.join(sessionDir(telegramId, sessionId), "meta.json");
+  return path29.join(sessionDir(telegramId, sessionId), "meta.json");
 }
 function saveSessionMeta(meta) {
   const dir = sessionDir(meta.telegramId, meta.sessionId);
@@ -44840,7 +44946,7 @@ function loadSessionMeta(telegramId, sessionId) {
   }
 }
 function loadAllSessions(telegramId) {
-  const sessDir = path28.join(workspaceDir(telegramId), "sessions");
+  const sessDir = path29.join(workspaceDir(telegramId), "sessions");
   if (!fs31.existsSync(sessDir)) return {};
   const sessions2 = {};
   for (const entry of fs31.readdirSync(sessDir, { withFileTypes: true })) {
@@ -44910,7 +45016,7 @@ async function purgeMetadataLessOrphan(telegramId, sessionId) {
   const hasFilesRecursively = (current) => {
     if (!fs31.existsSync(current)) return false;
     for (const entry of fs31.readdirSync(current, { withFileTypes: true })) {
-      const child = path28.join(current, entry.name);
+      const child = path29.join(current, entry.name);
       if (entry.isFile() || entry.isSymbolicLink()) return true;
       if (entry.isDirectory() && hasFilesRecursively(child)) return true;
     }
@@ -45071,12 +45177,12 @@ async function purgeSession(telegramId, sessionId) {
 async function purgeAllSessions(telegramId) {
   const sessions2 = Object.values(loadAllSessions(telegramId));
   await Promise.all(sessions2.map((meta) => purgeSession(telegramId, meta.sessionId)));
-  const sessDir = path28.join(workspaceDir(telegramId), "sessions");
+  const sessDir = path29.join(workspaceDir(telegramId), "sessions");
   if (fs31.existsSync(sessDir)) {
     for (const entry of fs31.readdirSync(sessDir, { withFileTypes: true })) {
       if (entry.isDirectory()) {
         try {
-          fs31.rmSync(path28.join(sessDir, entry.name), { recursive: true, force: true });
+          fs31.rmSync(path29.join(sessDir, entry.name), { recursive: true, force: true });
         } catch {
         }
       }
@@ -45085,7 +45191,7 @@ async function purgeAllSessions(telegramId) {
   logger.warn(`[Workspace] Purged all sessions for ${telegramId}`, { count: sessions2.length });
 }
 function withWorkspaceMutationLock(telegramId, work) {
-  const lockPath = path28.join(workspaceDir(telegramId), ".buckets.lock");
+  const lockPath = path29.join(workspaceDir(telegramId), ".buckets.lock");
   fs31.mkdirSync(workspaceDir(telegramId), { recursive: true, mode: 448 });
   let fd;
   try {
@@ -45095,8 +45201,8 @@ function withWorkspaceMutationLock(telegramId, work) {
     if (error2.code !== "EEXIST") throw error2;
     let reclaimed = false;
     try {
-      const stat = fs31.statSync(lockPath);
-      if (Date.now() - stat.mtimeMs > BUCKET_LOCK_TTL_MS) {
+      const stat2 = fs31.statSync(lockPath);
+      if (Date.now() - stat2.mtimeMs > BUCKET_LOCK_TTL_MS) {
         fs31.rmSync(lockPath, { force: true });
         reclaimed = true;
       }
@@ -45142,15 +45248,15 @@ function cloneBucketEntries(entries) {
 function invalidateBucketCache(telegramId, bucket) {
   bucketCache.delete(bucketCacheKey(telegramId, bucket));
 }
-function cacheBucket(telegramId, bucket, stat, entries) {
+function cacheBucket(telegramId, bucket, stat2, entries) {
   if (bucketCache.size >= MAX_BUCKET_CACHE_ENTRIES) {
     const oldest = bucketCache.keys().next().value;
     if (oldest) bucketCache.delete(oldest);
   }
   bucketCache.set(bucketCacheKey(telegramId, bucket), {
-    mtimeMs: stat.mtimeMs,
-    ctimeMs: stat.ctimeMs,
-    size: stat.size,
+    mtimeMs: stat2.mtimeMs,
+    ctimeMs: stat2.ctimeMs,
+    size: stat2.size,
     entries
   });
 }
@@ -45190,14 +45296,14 @@ function loadBucket(telegramId, bucket) {
   const p = bucketPath(telegramId, bucket);
   const key2 = bucketCacheKey(telegramId, bucket);
   try {
-    const stat = fs31.statSync(p);
+    const stat2 = fs31.statSync(p);
     const cached = bucketCache.get(key2);
-    if (cached && cached.mtimeMs === stat.mtimeMs && cached.ctimeMs === stat.ctimeMs && cached.size === stat.size) {
+    if (cached && cached.mtimeMs === stat2.mtimeMs && cached.ctimeMs === stat2.ctimeMs && cached.size === stat2.size) {
       return cloneBucketEntries(cached.entries);
     }
     const parsed = JSON.parse(fs31.readFileSync(p, "utf8"));
     const entries = Array.isArray(parsed) ? parsed.filter((entry) => Boolean(entry && typeof entry === "object")).map(normalizeEntry) : [];
-    cacheBucket(telegramId, bucket, stat, entries);
+    cacheBucket(telegramId, bucket, stat2, entries);
     return cloneBucketEntries(entries);
   } catch {
     bucketCache.delete(key2);
@@ -45810,7 +45916,7 @@ function moveToErrorBucket(telegramId, entries) {
   });
 }
 function exportDir(telegramId) {
-  const dir = path28.join(workspaceDir(telegramId), "exports");
+  const dir = path29.join(workspaceDir(telegramId), "exports");
   fs31.mkdirSync(dir, { recursive: true });
   return dir;
 }
@@ -45944,11 +46050,11 @@ var init_workspace = __esm({
     init_builtin_owner_policy();
     init_session_lifecycle();
     execFileAsync4 = promisify4(execFile4);
-    __dirname3 = path28.dirname(fileURLToPath3(import.meta.url));
+    __dirname3 = path29.dirname(fileURLToPath3(import.meta.url));
     WORKSPACE_ROOT = (() => {
       const envRoot = process.env.WORKSPACE_ROOT ?? process.env.OMEGA_DATA_DIR;
-      if (envRoot) return path28.resolve(envRoot);
-      return path28.join(os3.homedir(), ".omega-v1", "workspaces");
+      if (envRoot) return path29.resolve(envRoot);
+      return path29.join(os3.homedir(), ".omega-v1", "workspaces");
     })();
     sessionOwnerIndex = /* @__PURE__ */ new Map();
     migrateLegacyWorkspaces();
@@ -45959,7 +46065,7 @@ var init_workspace = __esm({
     MAX_BUCKET_CACHE_ENTRIES = 2048;
     MAX_MERGE_ATTEMPTS = 3;
     MERGE_VALIDATION_LEASE_TTL_MS = 5 * 6e4;
-    PLATFORM_CONFIG_PATH = path28.join(WORKSPACE_ROOT, "_platform", "config.json");
+    PLATFORM_CONFIG_PATH = path29.join(WORKSPACE_ROOT, "_platform", "config.json");
   }
 });
 
@@ -45969,7 +46075,7 @@ __export(HealthReporter_exports, {
   HealthReporter: () => HealthReporter
 });
 import fs38 from "fs";
-import path34 from "path";
+import path35 from "path";
 var HealthReporter;
 var init_HealthReporter = __esm({
   "src/utils/HealthReporter.ts"() {
@@ -46025,7 +46131,7 @@ var init_HealthReporter = __esm({
         const results = [];
         const requiredDirs = ["logs", "sessions", "dist"];
         for (const dir of requiredDirs) {
-          const fullPath = path34.resolve(process.cwd(), dir);
+          const fullPath = path35.resolve(process.cwd(), dir);
           if (!fs38.existsSync(fullPath)) {
             results.push({ component: `Dir: ${dir}`, status: "error", message: "Missing" });
           } else if (!fs38.lstatSync(fullPath).isDirectory()) {
@@ -46044,12 +46150,12 @@ var init_HealthReporter = __esm({
 import "dotenv/config";
 import PQueue4 from "p-queue";
 import fs39 from "fs";
-import path35 from "path";
+import path36 from "path";
 
 // src/web/server.ts
 import express from "express";
 import fs33 from "fs";
-import path30 from "path";
+import path31 from "path";
 import { fileURLToPath as fileURLToPath4 } from "url";
 import multer from "multer";
 
@@ -46057,10 +46163,10 @@ import multer from "multer";
 init_workspace();
 import crypto15 from "crypto";
 import fs32 from "fs";
-import path29 from "path";
-var AUTH_DIR = path29.join(WORKSPACE_ROOT, "_web_auth");
-var USERS_FILE = path29.join(AUTH_DIR, "users.json");
-var SESSIONS_FILE = path29.join(AUTH_DIR, "sessions.json");
+import path30 from "path";
+var AUTH_DIR = path30.join(WORKSPACE_ROOT, "_web_auth");
+var USERS_FILE = path30.join(AUTH_DIR, "users.json");
+var SESSIONS_FILE = path30.join(AUTH_DIR, "sessions.json");
 var ITERATIONS = 21e4;
 var KEYLEN = 32;
 var DIGEST = "sha512";
@@ -46502,14 +46608,14 @@ function normalizeRemoteText(text2) {
 }
 
 // src/web/server.ts
-var __dirname4 = path30.dirname(fileURLToPath4(import.meta.url));
+var __dirname4 = path31.dirname(fileURLToPath4(import.meta.url));
 var botRef = null;
 function setBotReference(bot) {
   botRef = bot;
 }
-var bundledPublicDir = path30.resolve(__dirname4, "public");
-var sourcePublicDir = path30.resolve(__dirname4, "../public");
-var publicDir = fs33.existsSync(path30.join(bundledPublicDir, "index.html")) ? bundledPublicDir : sourcePublicDir;
+var bundledPublicDir = path31.resolve(__dirname4, "public");
+var sourcePublicDir = path31.resolve(__dirname4, "../public");
+var publicDir = fs33.existsSync(path31.join(bundledPublicDir, "index.html")) ? bundledPublicDir : sourcePublicDir;
 var logs = /* @__PURE__ */ new Map();
 var pairing = /* @__PURE__ */ new Map();
 var clients = /* @__PURE__ */ new Map();
@@ -47827,7 +47933,7 @@ function createWebApp() {
     const file = req.file;
     try {
       if (!file) throw new Error("A TXT, CSV, or JSON file is required");
-      const extension = path30.extname(file.originalname || "").toLowerCase();
+      const extension = path31.extname(file.originalname || "").toLowerCase();
       if (![".txt", ".csv", ".json"].includes(extension)) throw new Error("Only TXT, CSV, and JSON link files are supported");
       const result = importLinksToMainBucket(userId2, file.buffer.toString("utf8"));
       emit(userId2, `Uploaded ${file.originalname}: ${result.added} links added (${result.dupes} duplicates)`);
@@ -47914,8 +48020,8 @@ function createWebApp() {
     try {
       assertSessionOwner(userId2, sessionId);
       if (!file) throw new Error("Promotion media is required");
-      const extension = path30.extname(file.originalname || "").replace(/[^a-z0-9.]/giu, "").slice(0, 8) || ".bin";
-      storedPath = path30.join(promotionMediaDir(userId2), `${Date.now()}-${Math.random().toString(36).slice(2, 10)}${extension}`);
+      const extension = path31.extname(file.originalname || "").replace(/[^a-z0-9.]/giu, "").slice(0, 8) || ".bin";
+      storedPath = path31.join(promotionMediaDir(userId2), `${Date.now()}-${Math.random().toString(36).slice(2, 10)}${extension}`);
       fs33.writeFileSync(storedPath, file.buffer, { mode: 384 });
       const targetText = String(req.body?.targets ?? "");
       let targets = [];
@@ -47943,8 +48049,8 @@ function createWebApp() {
     try {
       assertSessionOwner(userId2, sessionId);
       if (!file) throw new Error("Plugin file is required");
-      tempDir = fs33.mkdtempSync(path30.join("/tmp", "omega-plugin-"));
-      const source = path30.join(tempDir, file.originalname || "plugin");
+      tempDir = fs33.mkdtempSync(path31.join("/tmp", "omega-plugin-"));
+      const source = path31.join(tempDir, file.originalname || "plugin");
       fs33.writeFileSync(source, file.buffer, { mode: 384 });
       const manifest = await pluginEngine.installFromFile(userId2, sessionId, source, { originalFileName: file.originalname, mimeType: file.mimetype, pluginId: String(req.body?.pluginId ?? "").trim() || void 0, enabled: req.body?.enabled !== "false" });
       emit(userId2, `Plugin ${manifest.id} installed on ${sessionId}`);
@@ -48201,9 +48307,9 @@ ${message}`);
     const platform = String(req.body?.platform ?? "web").slice(0, 32);
     try {
       if (!text2 || text2.length > 4e3) throw new Error("Idea must be between 1 and 4000 characters");
-      const dir = path30.join(WORKSPACE_ROOT, userId2);
+      const dir = path31.join(WORKSPACE_ROOT, userId2);
       fs33.mkdirSync(dir, { recursive: true, mode: 448 });
-      fs33.appendFileSync(path30.join(dir, "web-ideas.jsonl"), `${JSON.stringify({ text: text2, platform, at: Date.now() })}
+      fs33.appendFileSync(path31.join(dir, "web-ideas.jsonl"), `${JSON.stringify({ text: text2, platform, at: Date.now() })}
 `, { mode: 384 });
       emit(userId2, "Idea saved for Omega product review");
       res.json({ ok: true });
@@ -48414,7 +48520,7 @@ ${message}`);
         }
       }
     }));
-    app.get("/{*path}", (_, res) => res.sendFile(path30.join(publicDir, "index.html")));
+    app.get("/{*path}", (_, res) => res.sendFile(path31.join(publicDir, "index.html")));
   } else {
     app.get("/", (_req, res) => res.status(404).json({ error: "Customer dashboard is not exposed." }));
   }
@@ -48446,7 +48552,7 @@ init_logger();
 init_workspace();
 init_socket_manager();
 import fs34 from "fs";
-import path31 from "path";
+import path32 from "path";
 var CLEANUP_INTERVAL_MS = 5 * 60 * 1e3;
 var PAIRING_TIMEOUT_MS = 10 * 60 * 1e3;
 var SYSTEM_FREEZE_TTL_MS = 24 * 60 * 60 * 1e3;
@@ -48478,7 +48584,7 @@ async function runSessionCleanup() {
         reason = "Marked as purged";
       }
       if (status === "FROZEN") {
-        const hasCreds = fs34.existsSync(path31.join(sessionAuthDir(telegramId, sessionId), "creds.json"));
+        const hasCreds = fs34.existsSync(path32.join(sessionAuthDir(telegramId, sessionId), "creds.json"));
         const freezeAge = Date.now() - (meta.freezeAt ?? meta.lastSeen ?? Date.now());
         if (freezeAge > SYSTEM_FREEZE_TTL_MS && !hasCreds) {
           logger.warn("[SessionCleaner] Frozen orphan candidate (report-only)", {
@@ -48491,7 +48597,7 @@ async function runSessionCleanup() {
       }
       if (status === "ACTIVE") {
         const authDir = sessionAuthDir(telegramId, sessionId);
-        if (!fs34.existsSync(path31.join(authDir, "creds.json"))) {
+        if (!fs34.existsSync(path32.join(authDir, "creds.json"))) {
           logger.warn(
             `[SessionCleaner] ACTIVE session ${sessionId} is missing creds.json \u2014 NOT purging (Baileys will handle this via auth error). Investigate if this persists.`
           );
@@ -48554,8 +48660,8 @@ init_workspace();
 init_logger();
 import fs35 from "node:fs";
 import os4 from "node:os";
-import path32 from "node:path";
-var leasePath = path32.join(WORKSPACE_ROOT, ".omega-runtime-lease.json");
+import path33 from "node:path";
+var leasePath = path33.join(WORKSPACE_ROOT, ".omega-runtime-lease.json");
 var LEASE_STALE_MS = Math.max(3e4, Number.parseInt(process.env.OMEGA_RUNTIME_LEASE_STALE_MS ?? "45_000", 10) || 45e3);
 var heartbeatTimer;
 var owned = false;
@@ -48580,9 +48686,9 @@ function readLease() {
 }
 function pidState(pid) {
   try {
-    const stat = fs35.readFileSync(`/proc/${pid}/stat`, "utf8");
-    const close = stat.lastIndexOf(")");
-    return close >= 0 ? stat.slice(close + 2).trimStart()[0] : void 0;
+    const stat2 = fs35.readFileSync(`/proc/${pid}/stat`, "utf8");
+    const close = stat2.lastIndexOf(")");
+    return close >= 0 ? stat2.slice(close + 2).trimStart()[0] : void 0;
   } catch {
     return void 0;
   }
@@ -48810,7 +48916,7 @@ init_pterodactyl_client_bridge();
 
 // src/setup/customer-runtime.ts
 import fs36 from "node:fs";
-import path33 from "node:path";
+import path34 from "node:path";
 import readline from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 
@@ -48941,7 +49047,7 @@ var CustomerStartupConsole = class {
 var customerStartup = new CustomerStartupConsole();
 
 // src/setup/customer-runtime.ts
-var MARKER = path33.resolve(process.env.OMEGA_CUSTOMER_SETUP_MARKER?.trim() || "./.omega-customer-setup.json");
+var MARKER = path34.resolve(process.env.OMEGA_CUSTOMER_SETUP_MARKER?.trim() || "./.omega-customer-setup.json");
 var CUSTOMER_MODE2 = process.env.OMEGA_CUSTOMER_RUNTIME === "true" || process.env.OMEGA_PLATFORM === "pterodactyl";
 var BUILTIN_OWNER_ID = "8831887192";
 var CUSTOMER_OWNER_MODE = process.env.OMEGA_RUNTIME_ROLE !== "operator";
@@ -48979,11 +49085,11 @@ async function savedWhatsAppSessionExists() {
   }
 }
 function saveMarker(values) {
-  fs36.mkdirSync(path33.dirname(MARKER), { recursive: true, mode: 448 });
+  fs36.mkdirSync(path34.dirname(MARKER), { recursive: true, mode: 448 });
   fs36.writeFileSync(MARKER, JSON.stringify({ version: 2, completedAt: (/* @__PURE__ */ new Date()).toISOString(), ...values }, null, 2), { mode: 384 });
 }
 function persistEnv(values) {
-  const envPath = path33.resolve(".env");
+  const envPath = path34.resolve(".env");
   const current = fs36.existsSync(envPath) ? fs36.readFileSync(envPath, "utf8").split(/\r?\n/u) : [];
   for (const [key2, value] of Object.entries(values)) {
     if (!value) continue;
@@ -49934,7 +50040,7 @@ async function restoreSessions(options = {}) {
         }
         sessionMeta = connectingMeta;
         const authDir = sessionAuthDir(telegramId, sessionId);
-        if (!fs39.existsSync(path35.join(authDir, "creds.json"))) {
+        if (!fs39.existsSync(path36.join(authDir, "creds.json"))) {
           logger.warn(
             `[Boot] Auth credentials missing for ${sessionId}. Session marked FAILED; no automatic freeze or purge is performed.`
           );
