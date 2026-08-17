@@ -1,4 +1,4 @@
-# Omega Customer Bot 1.2.6
+# Omega Customer Bot 1.2.7
 
 This repository publishes the source-protected Omega customer runtime. Customers deploy with one file: the root `index.js` bootstrap. It downloads the verified stable runtime, installs production dependencies, preserves the previous working release when an update fails, and starts the local bot.
 
@@ -20,7 +20,7 @@ If Telegram is enabled, the setup asks for your owner chat ID. Open the parent O
 
 The setup then asks for a WhatsApp number. Enter the full number with country code and no spaces, for example `2348012345678`. Pairing has a one-minute countdown. A successful session is preserved across restarts. Failed, expired, revoked, or abandoned pairing attempts are removed immediately, so stale Pair or Resume buttons are not retained.
 
-On later restarts, completed Telegram setup, owner identity, and existing WhatsApp sessions are reused. Only missing configuration is requested. The customer owner can use the Telegram **Restart Customer Bot** button or `/restart`; the panel process manager will bring the bot back with saved sessions and settings.
+On later restarts, completed Telegram setup, owner identity, and existing WhatsApp sessions are reused. Only missing configuration is requested. The customer owner can use the Telegram **Restart Customer Bot** button or `/restart`; the panel process manager will bring the bot back with saved sessions and settings. Stable runtime **1.2.7** also recovers stale same-container ownership after an unresponsive previous process and reopens setup when Telegram is configured but `TELEGRAM_OWNER_ID` is missing. If the panel still reports a live owner, press **Stop**, wait for the old process to exit, and then press **Start** once.
 
 ## Optional Redis
 

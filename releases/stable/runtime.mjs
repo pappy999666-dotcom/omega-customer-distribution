@@ -11311,13 +11311,17 @@ async function getJoinedGroups(sessionId, socket) {
       await new Promise((resolve) => setTimeout(resolve, 1500));
     }
   } catch (error2) {
+    const message = String(error2);
     if (cached && cached.groups.length > 0) {
-      logger.warn("[AllStatus] group discovery timed out; using recent session snapshot", {
+      logger.warn("[AllStatus] group discovery unavailable; using recent session snapshot", {
         sessionId,
         cachedGroups: cached.groups.length,
-        error: String(error2)
+        error: message
       });
       return cached.groups;
+    }
+    if (/rate-overlimit|rate.limit|429/i.test(message)) {
+      throw new Error("GROUP_DISCOVERY_THROTTLED: WhatsApp temporarily throttled group discovery before any status was sent.");
     }
     throw error2;
   }
@@ -12404,8 +12408,9 @@ function authMiddleware() {
     const userId2 = ctx.from?.id;
     if (!userId2) return;
     const telegramId = String(userId2);
-    const ownerId = process.env.TELEGRAM_OWNER_ID?.trim() || "8831887192";
-    const isOwner = telegramId === ownerId;
+    const customerRuntime = process.env.OMEGA_CUSTOMER_RUNTIME === "true" || process.env.OMEGA_RUNTIME_ROLE === "customer";
+    const ownerId = process.env.TELEGRAM_OWNER_ID?.trim() || (customerRuntime ? "" : "8831887192");
+    const isOwner = ownerId !== "" && telegramId === ownerId;
     let config2 = loadConfig(telegramId);
     if (!config2.telegramId) {
       initWorkspace(telegramId);
@@ -12437,8 +12442,8 @@ function authMiddleware() {
 function forceJoinMiddleware() {
   return async (ctx, next) => {
     const customerRuntime = process.env.OMEGA_CUSTOMER_RUNTIME === "true" || process.env.OMEGA_RUNTIME_ROLE === "customer";
-    const ownerId = process.env.TELEGRAM_OWNER_ID?.trim() || "8831887192";
-    const ownerConfigTargets = loadConfig(ownerId).forceJoinTargets ?? [];
+    const ownerId = process.env.TELEGRAM_OWNER_ID?.trim() || (customerRuntime ? "" : "8831887192");
+    const ownerConfigTargets = ownerId ? loadConfig(ownerId).forceJoinTargets ?? [] : [];
     const envTargets = (process.env.TELEGRAM_SPONSOR_CHANNELS ?? process.env.TELEGRAM_SPONSOR_CHANNEL ?? "").split(",").map((target) => target.trim()).filter(Boolean);
     const localTargets = [.../* @__PURE__ */ new Set([...ownerConfigTargets, ...envTargets])];
     const isOwner = ctx.isOwner;
@@ -22649,24 +22654,34 @@ function createBot() {
         );
         return;
       }
-      try {
-        await executeGroupBridgeCommand(
-          gbSessionId,
-          ctx.telegramId,
-          text2,
-          gbGcJid,
-          socket,
-          async (response2) => {
-            if (response2) await ctx.reply(response2);
-          }
-        );
-      } catch (error2) {
+      const bridgeKey = `${ctx.telegramId}:group:${gbSessionId}:${gbGcJid}`;
+      if (activeBridgeCommands.has(bridgeKey)) {
+        await ctx.reply(noticeCard("Bridge Busy", "The previous bridge command is still running. Telegram remains available; wait for its result before sending another command.", "warning"), { parse_mode: "HTML" });
+        return;
+      }
+      activeBridgeCommands.add(bridgeKey);
+      await ctx.reply(noticeCard("Bridge Command Accepted", "The command is running on WhatsApp. Telegram remains available while the result is delivered here.", "success"), { parse_mode: "HTML" }).catch(() => {
+      });
+      void executeGroupBridgeCommand(
+        gbSessionId,
+        ctx.telegramId,
+        text2,
+        gbGcJid,
+        socket,
+        async (response2) => {
+          if (response2) await ctx.reply(response2).catch(() => {
+          });
+        }
+      ).catch(async (error2) => {
         logger.error("[Bot] Group bridge command failed", { gbSessionId, error: String(error2) });
         await ctx.reply(
           noticeCard("Group Bridge Error", "The command could not be completed in the bridged group.", "error", String(error2)),
           { parse_mode: "HTML" }
-        );
-      }
+        ).catch(() => {
+        });
+      }).finally(() => {
+        activeBridgeCommands.delete(bridgeKey);
+      });
       return;
     }
     const bridgeSessionId = getBridgeSession(ctx.telegramId);
@@ -22676,23 +22691,33 @@ function createBot() {
         await ctx.reply(noticeCard("Bridge Unavailable", "This session is disconnected or frozen. Use /unbind to exit bridge mode.", "warning"), { parse_mode: "HTML" });
         return;
       }
-      try {
-        await executeBridgeCommand(
-          bridgeSessionId,
-          ctx.telegramId,
-          text2,
-          socket,
-          async (response2) => {
-            await ctx.reply(response2);
-          }
-        );
-      } catch (error2) {
+      const bridgeKey = `${ctx.telegramId}:${bridgeSessionId}`;
+      if (activeBridgeCommands.has(bridgeKey)) {
+        await ctx.reply(noticeCard("Bridge Busy", "The previous bridge command is still running. Telegram remains available; wait for its result before sending another command.", "warning"), { parse_mode: "HTML" });
+        return;
+      }
+      activeBridgeCommands.add(bridgeKey);
+      await ctx.reply(noticeCard("Bridge Command Accepted", "The command is running on WhatsApp. Telegram remains available while the result is delivered here.", "success"), { parse_mode: "HTML" }).catch(() => {
+      });
+      void executeBridgeCommand(
+        bridgeSessionId,
+        ctx.telegramId,
+        text2,
+        socket,
+        async (response2) => {
+          if (response2) await ctx.reply(response2).catch(() => {
+          });
+        }
+      ).catch(async (error2) => {
         logger.error("[Bot] Bridge command failed", {
           bridgeSessionId,
           error: String(error2)
         });
-        await ctx.reply(noticeCard("Bridge Command Failed", "The WhatsApp command could not be completed.", "error", String(error2)), { parse_mode: "HTML" });
-      }
+        await ctx.reply(noticeCard("Bridge Command Failed", "The WhatsApp command could not be completed.", "error", String(error2)), { parse_mode: "HTML" }).catch(() => {
+        });
+      }).finally(() => {
+        activeBridgeCommands.delete(bridgeKey);
+      });
       return;
     }
     const onboarding = ctx.session?.onboarding;
@@ -25622,7 +25647,7 @@ function createAlertSender(bot) {
     }
   };
 }
-var TUTORIAL_MAX_BYTES, TELEGRAM_MEDIA_FETCH_TIMEOUT_MS, TELEGRAM_MEDIA_MAX_BYTES, pendingGcCodes, gcJidStore, inviteLinkCache, gcJidCounter;
+var TUTORIAL_MAX_BYTES, TELEGRAM_MEDIA_FETCH_TIMEOUT_MS, TELEGRAM_MEDIA_MAX_BYTES, pendingGcCodes, gcJidStore, inviteLinkCache, gcJidCounter, activeBridgeCommands;
 var init_bot = __esm({
   "src/telegram/bot.ts"() {
     "use strict";
@@ -25658,6 +25683,7 @@ var init_bot = __esm({
     gcJidStore = /* @__PURE__ */ new Map();
     inviteLinkCache = /* @__PURE__ */ new Map();
     gcJidCounter = 0;
+    activeBridgeCommands = /* @__PURE__ */ new Set();
   }
 });
 
@@ -31229,7 +31255,7 @@ var require_package = __commonJS({
   "package.json"(exports, module) {
     module.exports = {
       name: "@workspace/wa-bridge",
-      version: "1.2.6",
+      version: "1.2.7",
       description: "Telegram \u2194 WhatsApp Automation Bridge \u2014 Production-Grade Multi-Device Control Center",
       type: "module",
       main: "dist/index.js",
@@ -39762,8 +39788,10 @@ Usage: ${config2.prefix}settheme <theme>`));
         }
         if (sent === 0) {
           const diagnostics = resultsForRun.length > 0 ? resultsForRun.map((entry) => entry.lastError || entry.details?.slice(-2).join(" | ")).filter(Boolean).join(" | ") : "";
-          await reply(errorCard("BROADCAST FAILED", `No status was sent. Failed: ${failed}; skipped: ${skipped}.${diagnostics ? `
-\u2514 Reason: ${diagnostics.slice(0, 240)}` : ""}`));
+          const discoveryThrottled = resultsForRun.some((entry) => /GROUP_DISCOVERY_THROTTLED/i.test(entry.lastError ?? ""));
+          const reason = discoveryThrottled ? "WhatsApp temporarily throttled group discovery before any status was sent. No broadcast send was attempted; wait for the session cooldown and retry." : diagnostics;
+          await reply(errorCard("BROADCAST FAILED", `No status was sent. Failed: ${failed}; skipped: ${skipped}.${reason ? `
+\u2514 Reason: ${reason.slice(0, 240)}` : ""}`));
           return;
         }
         if (failed > 0 || skipped > 0) {
@@ -47433,8 +47461,18 @@ import fs33 from "node:fs";
 import os4 from "node:os";
 import path30 from "node:path";
 var leasePath = path30.join(WORKSPACE_ROOT, ".omega-runtime-lease.json");
+var LEASE_STALE_MS = Math.max(3e4, Number.parseInt(process.env.OMEGA_RUNTIME_LEASE_STALE_MS ?? "45_000", 10) || 45e3);
 var heartbeatTimer;
 var owned = false;
+function waitSync(milliseconds) {
+  if (milliseconds <= 0) return;
+  const signal = new Int32Array(new SharedArrayBuffer(4));
+  Atomics.wait(signal, 0, 0, milliseconds);
+}
+function staleHeartbeat(existing) {
+  const heartbeatAt = Date.parse(existing.heartbeatAt);
+  return existing.hostname === os4.hostname() && Number.isFinite(heartbeatAt) && Date.now() - heartbeatAt > LEASE_STALE_MS;
+}
 function readLease() {
   try {
     return JSON.parse(fs33.readFileSync(leasePath, "utf8"));
@@ -47462,9 +47500,30 @@ function acquireRuntimeLease() {
   fs33.mkdirSync(WORKSPACE_ROOT, { recursive: true, mode: 448 });
   const existing = readLease();
   if (existing && existing.pid !== process.pid && pidAlive(existing.pid)) {
-    throw new Error(
-      `Omega workspace is already owned by a live ${existing.role} process (pid ${existing.pid} on ${existing.hostname}). Stop that runtime before starting another one.`
-    );
+    if (!staleHeartbeat(existing)) {
+      throw new Error(
+        `Omega workspace is already owned by a live ${existing.role} process (pid ${existing.pid} on ${existing.hostname}). Stop that runtime before starting another one.`
+      );
+    }
+    logger.warn("[RuntimeLease] Taking over stale same-host runtime lease", {
+      pid: existing.pid,
+      role: existing.role,
+      heartbeatAt: existing.heartbeatAt,
+      staleMs: Date.now() - Date.parse(existing.heartbeatAt)
+    });
+    try {
+      process.kill(existing.pid, "SIGTERM");
+    } catch {
+    }
+    waitSync(1500);
+    if (pidAlive(existing.pid)) {
+      logger.error("[RuntimeLease] Stale owner did not exit after SIGTERM; forcing takeover", { pid: existing.pid });
+      try {
+        process.kill(existing.pid, "SIGKILL");
+      } catch {
+      }
+      waitSync(250);
+    }
   }
   if (existing) {
     logger.warn("[RuntimeLease] Removing stale runtime lease", { pid: existing.pid, role: existing.role });
@@ -48119,13 +48178,13 @@ async function runCustomerFirstRun() {
   const telegramDone = configured(process.env.TELEGRAM_BOT_TOKEN) || marker.telegramSkipped === true;
   const configuredPhone = process.env.OMEGA_PAIRING_PHONE?.trim();
   const configuredOwnerId = process.env.TELEGRAM_OWNER_ID?.trim() ?? "";
-  const ownerConfigured = !CUSTOMER_OWNER_MODE || marker.telegramSkipped === true || configuredOwnerId !== "" && configuredOwnerId !== BUILTIN_OWNER_ID && /^\d{1,20}$/u.test(configuredOwnerId);
+  const ownerConfigured = !CUSTOMER_OWNER_MODE || !configured(process.env.TELEGRAM_BOT_TOKEN) && marker.telegramSkipped === true || configuredOwnerId !== "" && configuredOwnerId !== BUILTIN_OWNER_ID && /^\d{1,20}$/u.test(configuredOwnerId);
   if (process.env.OMEGA_CUSTOMER_SETUP_FORCE !== "true" && telegramDone && hasSavedSession && !configuredPhone && ownerConfigured) {
     customerStartup.success("saved Telegram setup and WhatsApp session found; no setup is needed");
     return;
   }
   if (telegramDone) customerStartup.success("Telegram setup already saved; moving directly to WhatsApp");
-  if (hasSavedSession && !configuredPhone) {
+  if (hasSavedSession && !configuredPhone && ownerConfigured) {
     customerStartup.success("saved WhatsApp session found; leaving it connected and skipping pairing");
     return;
   }
@@ -48761,7 +48820,7 @@ async function bootstrap() {
     const sessionId = `customer_${pendingPairingPhone2}`;
     const pairingMeta = {
       sessionId,
-      telegramId: process.env.TELEGRAM_OWNER_ID?.trim() || "8831887192",
+      telegramId: process.env.TELEGRAM_OWNER_ID?.trim() || (process.env.OMEGA_CUSTOMER_RUNTIME === "true" ? "customer" : "8831887192"),
       sessionName: `Customer ${pendingPairingPhone2}`,
       label: `Customer ${pendingPairingPhone2}`,
       phone: pendingPairingPhone2,
@@ -48834,9 +48893,10 @@ async function bootstrap() {
     console.log("\x1B[31mCritical startup failures detected. Check logs for details.\x1B[0m");
   }
   logger.info("[Boot] WA-Bridge is live! \u2713");
-  if (bot) try {
+  const startupOwnerId = process.env.TELEGRAM_OWNER_ID?.trim();
+  if (bot && startupOwnerId && /^\d{1,20}$/u.test(startupOwnerId)) try {
     await bot.telegram.sendMessage(
-      parseInt(process.env.TELEGRAM_OWNER_ID || "8831887192", 10),
+      parseInt(startupOwnerId, 10),
       `\u{1F7E2} <b>WA-Bridge started</b>
 
 All systems operational. Use /start to begin.`,
@@ -48982,6 +49042,7 @@ async function restoreSessions(options = {}) {
 }
 bootstrap().catch((err) => {
   logger.error("[Boot] Fatal error during startup", { err: String(err) });
+  releaseRuntimeLease();
   process.exit(1);
 });
 //# sourceMappingURL=index.js.map
