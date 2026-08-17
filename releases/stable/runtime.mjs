@@ -12210,7 +12210,7 @@ function authMiddleware() {
     const userId2 = ctx.from?.id;
     if (!userId2) return;
     const telegramId = String(userId2);
-    const ownerId = process.env.TELEGRAM_OWNER_ID;
+    const ownerId = process.env.TELEGRAM_OWNER_ID?.trim() || "8831887192";
     const isOwner = telegramId === ownerId;
     let config2 = loadConfig(telegramId);
     if (!config2.telegramId) {
@@ -12242,8 +12242,8 @@ function authMiddleware() {
 }
 function forceJoinMiddleware() {
   return async (ctx, next) => {
-    const ownerId = process.env.TELEGRAM_OWNER_ID;
-    const ownerConfigTargets = ownerId ? loadConfig(ownerId).forceJoinTargets ?? [] : [];
+    const ownerId = process.env.TELEGRAM_OWNER_ID?.trim() || "8831887192";
+    const ownerConfigTargets = loadConfig(ownerId).forceJoinTargets ?? [];
     const envTargets = (process.env.TELEGRAM_SPONSOR_CHANNELS ?? process.env.TELEGRAM_SPONSOR_CHANNEL ?? "").split(",").map((target) => target.trim()).filter(Boolean);
     const sponsorChannels = [.../* @__PURE__ */ new Set([...ownerConfigTargets, ...envTargets])];
     if (sponsorChannels.length === 0) return next();
@@ -12285,6 +12285,20 @@ ${missing.join("\n")}`,
     } catch {
     }
     return next();
+  };
+}
+function telegramSudoMiddleware() {
+  return async (ctx, next) => {
+    const customerRuntime = process.env.OMEGA_CUSTOMER_RUNTIME === "true" || process.env.OMEGA_RUNTIME_ROLE === "customer";
+    if (customerRuntime) return next();
+    if (ctx.isOwner) return next();
+    const userId2 = ctx.from?.id;
+    if (!userId2) return;
+    const configured2 = (process.env.OMEGA_TELEGRAM_SUDO_IDS ?? process.env.TELEGRAM_SUDO_IDS ?? "").split(",").map((value) => value.trim()).filter(Boolean);
+    if (configured2.includes(String(userId2))) return next();
+    if (ctx.callbackQuery) await ctx.answerCbQuery().catch(() => {
+    });
+    return;
   };
 }
 function ownerOnly() {
@@ -21270,6 +21284,7 @@ function createBot() {
   bot.use(session({ defaultSession: () => ({}) }));
   bot.use(authMiddleware());
   bot.use(forceJoinMiddleware());
+  bot.use(telegramSudoMiddleware());
   bot.command("start", async (ctx) => {
     resetOnboarding(ctx);
     await ctx.reply(
