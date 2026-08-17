@@ -14054,7 +14054,7 @@ function adminPanelKeyboard(paused = false, maintenance = false) {
   return {
     inline_keyboard: [
       [btn("\u{1F465} Users", "admin:users:0", "primary"), btn("\u{1F310} Master Bucket", "admin:master:bucket", "primary")],
-      [btn("\u{1F510} Force Join", "admin:forcejoin", "primary"), btn("\u{1F4E3} Broadcast", "admin:broadcast", "primary")],
+      [btn("\u{1F510} Force Join \xB7 Manage", "admin:forcejoin", "primary"), btn("\u{1F4E3} Broadcast", "admin:broadcast", "primary")],
       [
         btn("\u{1F4E1} Omni-Bridge", "admin:omni", "primary"),
         paused ? btn("\u25B6\uFE0F Resume Traffic", "admin:pause:off", "success") : btn("\u23F8 Global Pause", "admin:pause:on", "danger")
@@ -17507,6 +17507,54 @@ async function handleGlobalSudoPanel(ctx) {
     await ctx.reply(text2, { parse_mode: "HTML", reply_markup: keyboard });
   }
 }
+async function handleForceJoinPanel(ctx) {
+  const users = getAllUserIds();
+  const allocations = users.flatMap((telegramId) => {
+    const targets = loadConfig(telegramId).forceJoinTargets ?? [];
+    return targets.map((target) => ({ telegramId, target }));
+  });
+  const ownTargets = loadConfig(ctx.telegramId).forceJoinTargets ?? [];
+  const text2 = [
+    header("Force Join Control", "\u{1F510}"),
+    "",
+    kv("Scope:", "Owner-managed customer policy"),
+    kv("Users hosted:", String(users.length)),
+    kv("Allocated users:", String(new Set(allocations.map((item) => item.telegramId)).size)),
+    kv("Total targets:", String(allocations.length)),
+    kv("Your targets:", String(ownTargets.length)),
+    "",
+    ownTargets.length > 0 ? ownTargets.map((target, index) => `${index + 1}. <code>${escape(target)}</code>`).join("\n") : H.italic("No Force Join target is allocated for the owner workspace."),
+    "",
+    H.blockquote("Change replaces your current targets. Delete clears them. View lists every allocated target known to this parent runtime.", true)
+  ].join("\n");
+  const keyboard = {
+    inline_keyboard: [
+      [btn("\u270F\uFE0F Change Targets", "admin:forcejoin:change", "success"), btn("\u{1F441} View All", "admin:forcejoin:view", "primary")],
+      [btn("\u{1F5D1} Delete My Targets", "admin:forcejoin:clear", "danger")],
+      [btn("\u{1F519} Back", "admin:panel", "primary")]
+    ]
+  };
+  if (ctx.callbackQuery) await ctx.editMessageText(text2, { parse_mode: "HTML", reply_markup: keyboard }).catch(() => {
+  });
+  else await ctx.reply(text2, { parse_mode: "HTML", reply_markup: keyboard });
+}
+async function handleForceJoinView(ctx) {
+  const users = getAllUserIds();
+  const lines = users.flatMap((telegramId) => {
+    const targets = loadConfig(telegramId).forceJoinTargets ?? [];
+    return targets.map((target, index) => `${H.code(telegramId)} \xB7 ${index + 1}. <code>${escape(target)}</code>`);
+  });
+  const text2 = [
+    header("Force Join Allocations", "\u{1F441}"),
+    "",
+    kv("Hosted users:", String(users.length)),
+    kv("Allocated targets:", String(lines.length)),
+    "",
+    lines.length ? lines.join("\n") : H.italic("No Force Join allocations found.")
+  ].join("\n");
+  await ctx.editMessageText(text2, { parse_mode: "HTML", reply_markup: backKeyboard("admin:forcejoin") }).catch(() => {
+  });
+}
 async function handleOmniOwnerPanel(ctx) {
   const { getOmniOwnerNumbers: getOmniOwnerNumbers2 } = await Promise.resolve().then(() => (init_workspace(), workspace_exports));
   const numbers = getOmniOwnerNumbers2(ctx.telegramId);
@@ -17563,6 +17611,7 @@ async function handleAdminPanel(ctx) {
   const users = getAllUserIds();
   const sessions2 = loadPlatformSessions2();
   const active = sessions2.filter((session2) => session2.status === "ACTIVE").length;
+  const totalPaired = sessions2.filter((session2) => Boolean(session2.pairedAt) || ["ACTIVE", "FROZEN", "RECONNECTING", "DEGRADED"].includes(session2.status)).length;
   const pairing2 = sessions2.filter((session2) => session2.status === "PAIRING").length;
   const frozen = sessions2.filter((session2) => session2.status === "FROZEN").length;
   const globalJob = (await Promise.resolve().then(() => (init_auto_promote(), auto_promote_exports))).getGlobalJob();
@@ -17590,6 +17639,7 @@ async function handleAdminPanel(ctx) {
     kv("Platform:", "\u{1F7E2} Online"),
     kv("Active sockets:", String(sockets.size)),
     kv("Active sessions:", String(active)),
+    kv("Total paired:", String(totalPaired)),
     kv("Pairing sessions:", String(pairing2)),
     kv("Frozen sessions:", String(frozen)),
     kv("Persisted sessions:", String(sessions2.length)),
@@ -17629,6 +17679,7 @@ async function handleAdminPanel(ctx) {
       ["Platform", "Online"],
       ["Active sockets", String(sockets.size)],
       ["Active sessions", String(active)],
+      ["Total paired", String(totalPaired)],
       ["Pairing sessions", String(pairing2)],
       ["Frozen sessions", String(frozen)],
       ["Persisted sessions", String(sessions2.length)],
@@ -24660,8 +24711,24 @@ Use <b>Tutorial</b> for provider instructions.`,
       return;
     }
     if (sub === "forcejoin") {
-      ctx.session.awaitingForceJoin = true;
-      await ctx.editMessageText(card("Force Join Targets", "\u{1F510}", [["Mode", "Replace all targets"]], "Send @channels or numeric chat IDs separated by spaces/commas. Every target is verified before saving."), { parse_mode: "HTML", reply_markup: backKeyboard("admin:panel") });
+      const op = params[1];
+      if (op === "view") {
+        await handleForceJoinView(ctx);
+        return;
+      }
+      if (op === "clear") {
+        updateConfig(ctx.telegramId, { forceJoinTargets: [] });
+        await ctx.answerCbQuery("Force Join targets cleared").catch(() => {
+        });
+        await handleForceJoinPanel(ctx);
+        return;
+      }
+      if (op === "change") {
+        ctx.session.awaitingForceJoin = true;
+        await ctx.editMessageText(card("Change Force Join Targets", "\u{1F510}", [["Mode", "Replace all targets"]], "Send @channels or numeric chat IDs separated by spaces/commas. Every target is verified before saving."), { parse_mode: "HTML", reply_markup: backKeyboard("admin:forcejoin") });
+        return;
+      }
+      await handleForceJoinPanel(ctx);
       return;
     }
     if (sub === "broadcast") {
@@ -47004,22 +47071,29 @@ function sourceFor(workspaceId, deploymentId) {
       }
       let result;
       try {
-        if (!request.sessionId) throw new Error("A session is required for this control action.");
-        if (request.action === "JOIN_START" && !getSocket(request.sessionId)) throw new Error("The requested session is not operational.");
-        if (request.action === "JOIN_START") {
-          const job = startJoinJob(workspaceId, request.sessionId, request.payload ?? {});
-          result = { ...base, status: "ACCEPTED", at: (/* @__PURE__ */ new Date()).toISOString(), result: { jobId: job.id, state: job.status, message: "Join Manager started locally." } };
-        } else if (request.action === "JOIN_PAUSE") {
-          const job = pauseJoinJob(workspaceId, request.sessionId);
-          result = { ...base, status: job ? "ACCEPTED" : "REJECTED", at: (/* @__PURE__ */ new Date()).toISOString(), result: job ? { jobId: job.id, state: job.status, message: "Join Manager pause requested locally." } : void 0, ...job ? {} : { error: { code: "JOIN_JOB_NOT_FOUND", message: "No Join Manager job exists for this session." } } };
-        } else if (request.action === "JOIN_STOP") {
-          const job = stopJoinJob(workspaceId, request.sessionId);
-          result = { ...base, status: job ? "ACCEPTED" : "REJECTED", at: (/* @__PURE__ */ new Date()).toISOString(), result: job ? { jobId: job.id, state: job.status, message: "Join Manager stop requested locally." } : void 0, ...job ? {} : { error: { code: "JOIN_JOB_NOT_FOUND", message: "No Join Manager job exists for this session." } } };
-        } else if (request.action === "ALLSTATUS_STOP") {
-          stopAllStatus(request.sessionId);
-          result = { ...base, status: "ACCEPTED", at: (/* @__PURE__ */ new Date()).toISOString(), result: { jobId: request.jobId, state: "STOPPING", message: "AllStatus stop requested locally." } };
+        if (request.action === "FORCE_JOIN_SET" || request.action === "FORCE_JOIN_CLEAR") {
+          const policy = request.action === "FORCE_JOIN_CLEAR" ? void 0 : request.payload?.forceJoin;
+          const targets = policy?.enabled ? [...new Set([policy.channel, policy.groupId].filter((value) => Boolean(value && value.trim())))] : [];
+          updateConfig(workspaceId, { forceJoinTargets: targets });
+          result = { ...base, status: "COMPLETED", at: (/* @__PURE__ */ new Date()).toISOString(), result: { jobId: request.jobId, state: policy?.enabled ? "ENABLED" : "DISABLED", message: `Force Join ${policy?.enabled ? "policy applied" : "policy cleared"} locally.` } };
         } else {
-          result = { ...base, status: "REJECTED", at: (/* @__PURE__ */ new Date()).toISOString(), error: { code: "CONTROL_ACTION_UNSUPPORTED", message: "Control action is not supported." } };
+          if (!request.sessionId) throw new Error("A session is required for this control action.");
+          if (request.action === "JOIN_START" && !getSocket(request.sessionId)) throw new Error("The requested session is not operational.");
+          if (request.action === "JOIN_START") {
+            const job = startJoinJob(workspaceId, request.sessionId, request.payload ?? {});
+            result = { ...base, status: "ACCEPTED", at: (/* @__PURE__ */ new Date()).toISOString(), result: { jobId: job.id, state: job.status, message: "Join Manager started locally." } };
+          } else if (request.action === "JOIN_PAUSE") {
+            const job = pauseJoinJob(workspaceId, request.sessionId);
+            result = { ...base, status: job ? "ACCEPTED" : "REJECTED", at: (/* @__PURE__ */ new Date()).toISOString(), result: job ? { jobId: job.id, state: job.status, message: "Join Manager pause requested locally." } : void 0, ...job ? {} : { error: { code: "JOIN_JOB_NOT_FOUND", message: "No Join Manager job exists for this session." } } };
+          } else if (request.action === "JOIN_STOP") {
+            const job = stopJoinJob(workspaceId, request.sessionId);
+            result = { ...base, status: job ? "ACCEPTED" : "REJECTED", at: (/* @__PURE__ */ new Date()).toISOString(), result: job ? { jobId: job.id, state: job.status, message: "Join Manager stop requested locally." } : void 0, ...job ? {} : { error: { code: "JOIN_JOB_NOT_FOUND", message: "No Join Manager job exists for this session." } } };
+          } else if (request.action === "ALLSTATUS_STOP") {
+            stopAllStatus(request.sessionId);
+            result = { ...base, status: "ACCEPTED", at: (/* @__PURE__ */ new Date()).toISOString(), result: { jobId: request.jobId, state: "STOPPING", message: "AllStatus stop requested locally." } };
+          } else {
+            result = { ...base, status: "REJECTED", at: (/* @__PURE__ */ new Date()).toISOString(), error: { code: "CONTROL_ACTION_UNSUPPORTED", message: "Control action is not supported." } };
+          }
         }
       } catch (error2) {
         result = { ...base, status: "FAILED", at: (/* @__PURE__ */ new Date()).toISOString(), error: { code: "LOCAL_CONTROL_FAILED", message: String(error2).slice(0, 240) } };
