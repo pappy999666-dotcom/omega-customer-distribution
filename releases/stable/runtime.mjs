@@ -5894,6 +5894,7 @@ __export(tri_bucket_exports, {
   extractAllInviteLinks: () => extractAllInviteLinks,
   extractInviteCode: () => extractInviteCode,
   getMasterActiveBucket: () => getMasterActiveBucket,
+  getMasterBucket: () => getMasterBucket,
   validateLink: () => validateLink
 });
 import path3 from "path";
@@ -6078,17 +6079,30 @@ ${cardRows}
 function exportBucket(telegramId, bucket, format) {
   return exportBucketWithReport(telegramId, bucket, format).filepath;
 }
+function getMasterBucket(userIds) {
+  const all = [];
+  const seen3 = /* @__PURE__ */ new Set();
+  for (const uid of userIds) {
+    for (const bucket of ["main", "active", "dead", "error"]) {
+      for (const entry of loadBucket(uid, bucket)) {
+        const key2 = entry.canonicalKey ?? entry.jid ?? entry.link;
+        if (seen3.has(key2)) continue;
+        all.push(entry);
+        seen3.add(key2);
+      }
+    }
+  }
+  return all;
+}
 function getMasterActiveBucket(userIds) {
   const all = [];
   const seen3 = /* @__PURE__ */ new Set();
   for (const uid of userIds) {
-    const active = loadBucket(uid, "active");
-    for (const e of active) {
-      const key2 = e.jid ?? e.link;
-      if (!seen3.has(key2)) {
-        all.push(e);
-        seen3.add(key2);
-      }
+    for (const entry of loadBucket(uid, "active")) {
+      const key2 = entry.canonicalKey ?? entry.jid ?? entry.link;
+      if (seen3.has(key2)) continue;
+      all.push(entry);
+      seen3.add(key2);
     }
   }
   return all;
@@ -17943,6 +17957,7 @@ __export(admin_exports, {
   processReleaseUsername: () => processReleaseUsername,
   stopLogStream: () => stopLogStream,
   syncForceJoinToCore: () => syncForceJoinToCore,
+  syncParentMenuToCore: () => syncParentMenuToCore,
   syncParentPermissionsToCore: () => syncParentPermissionsToCore,
   syncParentPolicyToCore: () => syncParentPolicyToCore
 });
@@ -18008,14 +18023,27 @@ async function syncParentPolicyToCore(policy) {
   const apiUrl = (process.env.OMEGA_API_URL?.trim() || process.env.OMEGA_CORE_URL?.trim() || "").replace(/\/+$/u, "");
   const adminToken = process.env.OMEGA_ADMIN_TOKEN?.trim();
   if (!apiUrl || !adminToken) return { attempted: 0, reason: "Core admin credentials are not configured on the parent process." };
-  const response2 = await fetch(`${apiUrl}/v1/admin/policy`, {
-    method: "POST",
-    headers: { "x-omega-admin-token": adminToken, "content-type": "application/json", accept: "application/json" },
-    body: JSON.stringify(policy)
+  try {
+    const response2 = await fetch(`${apiUrl}/v1/admin/policy`, {
+      method: "POST",
+      headers: { "x-omega-admin-token": adminToken, "content-type": "application/json", accept: "application/json" },
+      body: JSON.stringify(policy)
+    });
+    const body = await response2.json().catch(() => ({}));
+    if (!response2.ok) return { attempted: 0, reason: String(body.message ?? `Core policy sync failed (${response2.status}).`) };
+    return { attempted: Number.isFinite(Number(body.attempted)) ? Number(body.attempted) : 0 };
+  } catch (error2) {
+    return { attempted: 0, reason: String(error2).slice(0, 180) };
+  }
+}
+async function syncParentMenuToCore() {
+  const buttons = getGlobalMenuButtons();
+  const active = buttons.filter((button) => button.enabled);
+  return syncParentPolicyToCore({
+    globalMenuButtons: buttons,
+    globalMenuUrl: active[0] ? `${active[0].name}|${active[0].url}` : "",
+    globalMenuUrls: active.map((button) => `${button.name}|${button.url}`)
   });
-  const body = await response2.json().catch(() => ({}));
-  if (!response2.ok) return { attempted: 0, reason: String(body.message ?? `Core policy sync failed (${response2.status}).`) };
-  return { attempted: Number.isFinite(Number(body.attempted)) ? Number(body.attempted) : 0 };
 }
 async function dispatchParentOmniCommand(command, batchSize = 1) {
   const apiUrl = (process.env.OMEGA_API_URL?.trim() || process.env.OMEGA_CORE_URL?.trim() || "").replace(/\/+$/u, "");
@@ -18441,14 +18469,14 @@ All sessions for ${H.code(targetId)} have been deleted.`,
 }
 async function handleMasterBucket(ctx) {
   const userIds = getAllUserIds();
-  const master = getMasterActiveBucket(userIds);
+  const master = getMasterBucket(userIds);
   const text2 = [
-    header("Master Active Bucket", "\u{1F310}"),
+    header("Master Bucket", "\u{1F310}"),
     "",
     kv("Total Links:", String(master.length)),
     kv("From Users:", String(userIds.length)),
     "",
-    H.blockquote(`Aggregates all Active bucket links from every user workspace.`)
+    H.blockquote(`Aggregates deduplicated Main, Active, Dead, and Error links from every user workspace.`)
   ].join("\n");
   await ctx.editMessageText(text2, {
     parse_mode: "HTML",
@@ -19186,6 +19214,8 @@ async function handleAdminMenuUrlToggle(ctx, buttonId) {
   if (button) {
     button.enabled = !button.enabled;
     saveGlobalMenuButtons(buttons);
+    void syncParentMenuToCore().catch(() => {
+    });
     await ctx.answerCbQuery(button.enabled ? "Button enabled" : "Button disabled").catch(() => {
     });
   }
@@ -19198,6 +19228,8 @@ async function handleAdminMenuUrlDelete(ctx, buttonId) {
     b.order = i;
   });
   saveGlobalMenuButtons(buttons);
+  void syncParentMenuToCore().catch(() => {
+  });
   await ctx.answerCbQuery("Button deleted").catch(() => {
   });
   await handleAdminMenuUrlManager(ctx);
@@ -19220,6 +19252,8 @@ async function handleAdminMenuUrlMove(ctx, buttonId, direction) {
     curr.order = tempOrder;
   }
   saveGlobalMenuButtons(buttons);
+  void syncParentMenuToCore().catch(() => {
+  });
   await handleAdminMenuUrlManager(ctx);
 }
 var activeDeployments;
@@ -19241,7 +19275,6 @@ var init_admin = __esm({
     init_database_health();
     init_all_status();
     init_rich_messages();
-    init_workspace();
     init_keyboards();
     activeDeployments = /* @__PURE__ */ new Set();
   }
@@ -22601,13 +22634,21 @@ function sourceFor(workspaceId, deploymentId) {
             ...typeof policy.statusDesignEnabled === "boolean" ? { statusDesignEnabled: policy.statusDesignEnabled } : {},
             ...typeof policy.statusDesignTheme === "string" && policy.statusDesignTheme.trim() ? { statusDesignTheme: policy.statusDesignTheme.trim().slice(0, 80) } : {}
           };
-          if (Object.keys(patch).length === 0) throw new Error("Parent policy payload is empty.");
+          const hasMenuPolicy = Array.isArray(policy.globalMenuButtons) || typeof policy.globalMenuUrl === "string" || Array.isArray(policy.globalMenuUrls);
+          if (hasMenuPolicy) {
+            updatePlatformConfig({
+              ...Array.isArray(policy.globalMenuButtons) ? { globalMenuButtons: policy.globalMenuButtons } : {},
+              ...typeof policy.globalMenuUrl === "string" ? { globalMenuUrl: policy.globalMenuUrl } : {},
+              ...Array.isArray(policy.globalMenuUrls) ? { globalMenuUrls: policy.globalMenuUrls } : {}
+            });
+          }
+          if (Object.keys(patch).length === 0 && !hasMenuPolicy) throw new Error("Parent policy payload is empty.");
           let applied = 0;
           for (const { telegramId, meta } of loadAllSessionsGlobally()) {
             updateSessionConfig(telegramId, meta.sessionId, patch);
             applied += 1;
           }
-          result = { ...base, status: "COMPLETED", at: (/* @__PURE__ */ new Date()).toISOString(), result: { jobId: request.jobId, state: "SYNCED", message: `Parent policy applied to ${applied} local session${applied === 1 ? "" : "s"}.` } };
+          result = { ...base, status: "COMPLETED", at: (/* @__PURE__ */ new Date()).toISOString(), result: { jobId: request.jobId, state: "SYNCED", message: `Parent policy applied to ${applied} local session${applied === 1 ? "" : "s"}${hasMenuPolicy ? " and platform menu." : "."}` } };
         } else if (request.action === "PERMISSION_SYNC") {
           applySynchronizedPermissionPolicy(request.payload?.permissions ?? {});
           result = { ...base, status: "COMPLETED", at: (/* @__PURE__ */ new Date()).toISOString(), result: { jobId: request.jobId, state: "SYNCED", message: "Parent permission policy applied locally." } };
@@ -23117,6 +23158,26 @@ function createBot() {
   });
   bot.command("sessions", async (ctx) => {
     await handleSessionsList(ctx);
+  });
+  bot.command("recover", ownerOnly(), async (ctx) => {
+    const sessionId = ctx.message.text.split(/\s+/u).slice(1).join(" ").trim();
+    if (!sessionId) {
+      await ctx.reply(noticeCard("Session Recovery", "Usage: /recover <session ID>", "info"), { parse_mode: "HTML" });
+      return;
+    }
+    const ownerId = findSessionOwner(sessionId) ?? ctx.telegramId;
+    const meta = loadSessionMeta(ownerId, sessionId);
+    if (!meta || !meta.pairedAt || !hasRegisteredAuth(sessionId, ownerId)) {
+      await ctx.reply(noticeCard("Recovery Unavailable", "This session has no registered WhatsApp authentication to restore.", "warning"), { parse_mode: "HTML" });
+      return;
+    }
+    await ctx.reply(noticeCard("Recovery Started", `Restoring <code>${escape(sessionId)}</code>. Saved authentication will be preserved.`, "info"), { parse_mode: "HTML" });
+    try {
+      await reinitSocket(meta, { explicitRecovery: true });
+      await ctx.reply(noticeCard("Recovery Requested", `The session restore lifecycle has been restarted for <code>${escape(sessionId)}</code>.`, "success"), { parse_mode: "HTML" });
+    } catch (error2) {
+      await ctx.reply(noticeCard("Recovery Still Pending", `The session remains preserved. <code>${escape(String(error2).slice(0, 500))}</code>`, "warning"), { parse_mode: "HTML" });
+    }
   });
   bot.command("bucket", async (ctx) => {
     await handleBucketStatus(ctx);
@@ -24186,6 +24247,8 @@ ${text2}`);
         if (button) {
           button.name = name;
           saveGlobalMenuButtons(buttons);
+          void syncParentMenuToCore().catch(() => {
+          });
           await ctx.reply(`\u2705 Button renamed to <b>${escape(name)}</b>.`, { parse_mode: "HTML" });
           await handleAdminMenuUrlEdit(ctx, editingId);
         }
@@ -24213,6 +24276,8 @@ Now send the HTTP/HTTPS URL for this button.`, { parse_mode: "HTML" });
         if (button) {
           button.url = url;
           saveGlobalMenuButtons(buttons);
+          void syncParentMenuToCore().catch(() => {
+          });
           await ctx.reply(`\u2705 URL updated for <b>${escape(button.name)}</b>.`, { parse_mode: "HTML" });
           await handleAdminMenuUrlEdit(ctx, editingId);
         }
@@ -24228,6 +24293,8 @@ Now send the HTTP/HTTPS URL for this button.`, { parse_mode: "HTML" });
         };
         buttons.push(newButton);
         saveGlobalMenuButtons(buttons);
+        void syncParentMenuToCore().catch(() => {
+        });
         delete ctx.session.tempButtonName;
         await ctx.reply(`\u2705 Button <b>${escape(name)}</b> added successfully.`, { parse_mode: "HTML" });
         await handleAdminMenuUrlManager(ctx);
@@ -24238,6 +24305,8 @@ Now send the HTTP/HTTPS URL for this button.`, { parse_mode: "HTML" });
       ctx.session.awaitingGlobalMenuUrl = false;
       if (!ctx.isOwner) return;
       setGlobalMenuUrl(text2);
+      void syncParentMenuToCore().catch(() => {
+      });
       await ctx.reply(
         card("Global Menu Buttons Updated", "\u{1F517}", [["Input", text2]], "Legacy input converted to structured buttons."),
         { parse_mode: "HTML", reply_markup: adminPanelKeyboard(false, false) }
@@ -26499,9 +26568,9 @@ Use <b>Tutorial</b> for provider instructions.`,
     if (sub === "master") {
       if (params[1] === "bucket") await handleMasterBucket(ctx);
       else if (params[1] === "export") {
-        const { getMasterActiveBucket: getMasterActiveBucket2 } = await Promise.resolve().then(() => (init_tri_bucket(), tri_bucket_exports));
+        const { getMasterBucket: getMasterBucket2 } = await Promise.resolve().then(() => (init_tri_bucket(), tri_bucket_exports));
         const { getAllUserIds: getAllUserIds2, exportDir: exportDir2 } = await Promise.resolve().then(() => (init_workspace(), workspace_exports));
-        const master = getMasterActiveBucket2(getAllUserIds2());
+        const master = getMasterBucket2(getAllUserIds2());
         const { saveBucket: saveBucket2 } = await Promise.resolve().then(() => (init_workspace(), workspace_exports));
         saveBucket2(ctx.telegramId, "active", master);
         await handleExportBucket(ctx, params[2] ?? "txt");
@@ -26762,6 +26831,8 @@ Use <b>Tutorial</b> for provider instructions.`,
       }
       if (action2 === "clear") {
         clearGlobalMenuUrl();
+        void syncParentMenuToCore().catch(() => {
+        });
         await ctx.answerCbQuery("All buttons cleared").catch(() => {
         });
         await handleAdminMenuUrlManager(ctx);
@@ -32622,7 +32693,7 @@ var require_package = __commonJS({
   "package.json"(exports, module) {
     module.exports = {
       name: "@workspace/wa-bridge",
-      version: "1.2.25",
+      version: "1.2.26",
       description: "Telegram \u2194 WhatsApp Automation Bridge \u2014 Production-Grade Multi-Device Control Center",
       type: "module",
       main: "dist/index.js",
@@ -40422,7 +40493,7 @@ ${config2.prefix}autopromo off`));
     }
     // ── Public / Private Mode ──
     // .setmode public  → anyone may use commands
-    // .setmode private → only owners, sudo and authorized users (Pair always accessible)
+    // .setmode private → only owners, sudo and authorized users, including Pair
     // .public on|off   → legacy alias
     case "setmode":
     case "public": {
@@ -40433,7 +40504,7 @@ ${config2.prefix}autopromo off`));
         await reply(successCard("ACCESS MODE", `Session is now ${bold(enabled ? "PUBLIC" : "PRIVATE")}.`, [
           ["Mode", enabled ? "\u{1F30D} Public" : "\u{1F512} Private"],
           ["Access", enabled ? "Pair, Help & Menu for everyone" : "Owners, sudo & authorized only"],
-          ["Pair", "Always accessible"]
+          ["Pair", enabled ? "Accessible to everyone" : "Owners, sudo & authorized only"]
         ]));
       } else {
         await reply(asciiBox({
@@ -40444,7 +40515,7 @@ ${config2.prefix}autopromo off`));
             ["Usage", `${config2.prefix}setmode <public|private>`],
             ["Public", "Pair, Help & Menu only"],
             ["Private", "Owners, sudo & authorized only"],
-            ["Pair", "Always accessible in both modes"]
+            ["Pair", config2.publicMode ? "Accessible to everyone" : "Owners, sudo & authorized only"]
           ]
         }));
       }

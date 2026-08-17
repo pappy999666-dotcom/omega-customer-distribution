@@ -74,7 +74,7 @@ When the operator Core is configured, the customer deployment enrolls with an au
 
 The uploaded `index.js` is the bootstrap key. With automatic updates enabled, the customer heartbeat receives the release signal from the parent Core, compares it with the packaged runtime version, waits briefly for active work to settle, and hands a graceful restart to the panel supervisor only when a newer build exists. The bootstrap then checks the stable GitHub manifest, verifies SHA-256 hashes, stages the new runtime safely, installs changed production dependencies, and keeps the previous working release if an update fails. Customers do not need to download another file for future stable updates. Keep the original bootstrap `index.js`; new commands, dependency changes, and parent policy updates are pulled automatically.
 
-For resource recommendations and troubleshooting, use the accompanying `CUSTOMER_QUICKSTART.md` guide supplied by the operator.
+For resource recommendations and troubleshooting, read the complete [CUSTOMER_QUICKSTART.md](./CUSTOMER_QUICKSTART.md) guide.
 
 ## Useful Telegram controls
 
