@@ -10612,7 +10612,7 @@ async function resolveTargetJid(socket, target) {
 async function cmdGroupStatus(socket, telegramId, sessionId, groupJid, text2, opts = {}) {
   if (isFrozen(sessionId)) return false;
   try {
-    if (opts.sourceExt && !opts.mediaBuffer) {
+    if (opts.sourceExt && !opts.mediaBuffer && opts.statusDesignEnabled !== true) {
       const relayed = await sendStatusAsIs(socket, groupJid, text2, opts.sourceExt);
       if (relayed) return true;
     }
@@ -11403,7 +11403,8 @@ async function cmdAllStatus(socket, sessionId, telegramId, text2, opts = {}) {
     const rawUrl = text2.match(/https?:\/\/[^\s]+/u)?.[0];
     let resolvedPreview = opts.existingPreview;
     let preparedPreview;
-    const completeSourceExt = opts.sourceExt && PreviewValidator.isCompleteSourcePreview(opts.sourceExt) ? opts.sourceExt : void 0;
+    const designEnabled = config2.statusDesignEnabled !== false;
+    const completeSourceExt = !designEnabled && opts.sourceExt && PreviewValidator.isCompleteSourcePreview(opts.sourceExt) ? opts.sourceExt : void 0;
     if (rawUrl && !completeSourceExt) {
       const isWhatsAppTarget = /(?:chat\.whatsapp\.com|whatsapp\.com\/channel)\//i.test(rawUrl);
       const freshPreview = await runBroadcastStep(sessionId, () => PreviewManager.resolvePreviewOnce(rawUrl, socket, opts.existingPreview));
@@ -12477,12 +12478,38 @@ function forceJoinMiddleware() {
       if (!unavailable && missing.length === 0) return next();
     }
     const targets = missing.length > 0 ? missing : localTargets;
-    const detail = unavailable ? "Membership verification is temporarily unavailable. Please try again shortly." : `You must join these channels/groups first:
-${targets.join("\n")}`;
+    if (unavailable) {
+      const noticeKey = `${String(userId2)}:${targets.join("|")}`;
+      const now3 = Date.now();
+      const lastNotice = forceJoinUnavailableNoticeAt.get(noticeKey) ?? 0;
+      if (now3 - lastNotice >= FORCE_JOIN_UNAVAILABLE_NOTICE_TTL_MS) {
+        forceJoinUnavailableNoticeAt.set(noticeKey, now3);
+        await ctx.reply(
+          `\u26A0\uFE0F <b>Membership Check Delayed</b>
+
+Verification is temporarily unavailable, so access is not blocked. Please join the required targets when available:
+${targets.length ? targets.join("\n") : "Configured Force Join targets"}
+
+You can continue using the bot; tap <b>I Joined</b> after joining.`,
+          {
+            parse_mode: "HTML",
+            reply_markup: {
+              inline_keyboard: [
+                ...targets.filter((target) => target.startsWith("@")).map((target) => [{ text: `\u{1F4E2} Join ${target}`, url: `https://t.me/${target.replace("@", "")}` }]),
+                [{ text: "\u2705 I Joined", callback_data: "verify:joined" }]
+              ]
+            }
+          }
+        ).catch(() => {
+        });
+      }
+      return next();
+    }
     await ctx.reply(
       `\u26A0\uFE0F <b>Access Restricted</b>
 
-${detail}`,
+You must join these channels/groups first:
+${targets.join("\n")}`,
       {
         parse_mode: "HTML",
         reply_markup: {
@@ -12533,7 +12560,7 @@ function ownerOnly() {
     return next();
   };
 }
-var maintenanceMode, globalPaused;
+var maintenanceMode, globalPaused, forceJoinUnavailableNoticeAt, FORCE_JOIN_UNAVAILABLE_NOTICE_TTL_MS;
 var init_auth = __esm({
   "src/telegram/middlewares/auth.ts"() {
     "use strict";
@@ -12542,6 +12569,8 @@ var init_auth = __esm({
     init_logger();
     maintenanceMode = process.env.MAINTENANCE_MODE === "true";
     globalPaused = false;
+    forceJoinUnavailableNoticeAt = /* @__PURE__ */ new Map();
+    FORCE_JOIN_UNAVAILABLE_NOTICE_TTL_MS = 6e4;
   }
 });
 
@@ -14978,6 +15007,7 @@ var init_session = __esm({
     init_socket_manager();
     init_event_handlers();
     init_session_lifecycle_manager();
+    init_socket_manager();
     init_keyboards();
     init_formatter();
     init_join_manager();
@@ -17819,6 +17849,53 @@ var init_auto_promote = __esm({
 });
 
 // src/telegram/handlers/admin.ts
+var admin_exports = {};
+__export(admin_exports, {
+  dispatchParentBroadcast: () => dispatchParentBroadcast,
+  executeOmniCommand: () => executeOmniCommand,
+  handleAddReleaseButton: () => handleAddReleaseButton,
+  handleAdminMenuUrlDelete: () => handleAdminMenuUrlDelete,
+  handleAdminMenuUrlEdit: () => handleAdminMenuUrlEdit,
+  handleAdminMenuUrlManager: () => handleAdminMenuUrlManager,
+  handleAdminMenuUrlMove: () => handleAdminMenuUrlMove,
+  handleAdminMenuUrlToggle: () => handleAdminMenuUrlToggle,
+  handleAdminPanel: () => handleAdminPanel,
+  handleAdminUserMenu: () => handleAdminUserMenu,
+  handleAdminUsers: () => handleAdminUsers,
+  handleBanUser: () => handleBanUser,
+  handleClearAllSessionsConfirm: () => handleClearAllSessionsConfirm,
+  handleClearAllSessionsExecute: () => handleClearAllSessionsExecute,
+  handleClearDeadSessions: () => handleClearDeadSessions,
+  handleForceJoinPanel: () => handleForceJoinPanel,
+  handleForceJoinView: () => handleForceJoinView,
+  handleGlobalPause: () => handleGlobalPause,
+  handleGlobalSudoPanel: () => handleGlobalSudoPanel,
+  handleInspectUser: () => handleInspectUser,
+  handleLogStream: () => handleLogStream,
+  handleMaintenanceToggle: () => handleMaintenanceToggle,
+  handleMasterBucket: () => handleMasterBucket,
+  handleOmniBridge: () => handleOmniBridge,
+  handleOmniOwnerPanel: () => handleOmniOwnerPanel,
+  handlePermissionInput: () => handlePermissionInput,
+  handlePlatformStats: () => handlePlatformStats,
+  handlePurgeConfirm: () => handlePurgeConfirm2,
+  handlePurgeUserSessions: () => handlePurgeUserSessions,
+  handleReleaseButtonStyle: () => handleReleaseButtonStyle,
+  handleReleaseButtonsPanel: () => handleReleaseButtonsPanel,
+  handleReleaseMenu: () => handleReleaseMenu,
+  handleReleaseToggle: () => handleReleaseToggle,
+  handleRemoveReleaseButton: () => handleRemoveReleaseButton,
+  handleRestartBot: () => handleRestartBot,
+  handleSessionDefaultsPanel: () => handleSessionDefaultsPanel,
+  handleSetReleaseUsername: () => handleSetReleaseUsername,
+  handleTelegramSudoPanel: () => handleTelegramSudoPanel,
+  handleUpdateBot: () => handleUpdateBot,
+  processReleaseButtonInput: () => processReleaseButtonInput,
+  processReleaseUsername: () => processReleaseUsername,
+  stopLogStream: () => stopLogStream,
+  syncForceJoinToCore: () => syncForceJoinToCore,
+  syncParentPolicyToCore: () => syncParentPolicyToCore
+});
 async function handleGlobalSudoPanel(ctx) {
   const { getGlobalSudoNumbers: getGlobalSudoNumbers2 } = await Promise.resolve().then(() => (init_workspace(), workspace_exports));
   const numbers = getGlobalSudoNumbers2(ctx.telegramId);
@@ -17858,6 +17935,19 @@ async function syncForceJoinToCore(targets) {
   } catch (error2) {
     return { configured: true, attempted: 0, applied: 0, reason: String(error2).slice(0, 180) };
   }
+}
+async function syncParentPolicyToCore(policy) {
+  const apiUrl = (process.env.OMEGA_API_URL?.trim() || process.env.OMEGA_CORE_URL?.trim() || "").replace(/\/+$/u, "");
+  const adminToken = process.env.OMEGA_ADMIN_TOKEN?.trim();
+  if (!apiUrl || !adminToken) return { attempted: 0, reason: "Core admin credentials are not configured on the parent process." };
+  const response2 = await fetch(`${apiUrl}/v1/admin/policy`, {
+    method: "POST",
+    headers: { "x-omega-admin-token": adminToken, "content-type": "application/json", accept: "application/json" },
+    body: JSON.stringify(policy)
+  });
+  const body = await response2.json().catch(() => ({}));
+  if (!response2.ok) return { attempted: 0, reason: String(body.message ?? `Core policy sync failed (${response2.status}).`) };
+  return { attempted: Number.isFinite(Number(body.attempted)) ? Number(body.attempted) : 0 };
 }
 async function dispatchParentBroadcast(text2, parseMode = "HTML") {
   const apiUrl = (process.env.OMEGA_API_URL?.trim() || process.env.OMEGA_CORE_URL?.trim() || "").replace(/\/+$/u, "");
@@ -24072,9 +24162,15 @@ Use <b>Tutorial</b> for provider instructions.`,
     }
     if (sub === "groups") {
       const page = parseInt(params[2] ?? "0", 10);
-      const socket = getSocket(sessionId);
+      let socket = getSocket(sessionId);
+      if (!socket && !isFrozen(sessionId)) {
+        await ctx.answerCbQuery("Reconnecting session\u2026").catch(() => {
+        });
+        await resumeSession(sessionId).catch((error2) => logger.warn("[Bot] Session Groups resume failed", { sessionId, error: String(error2) }));
+        socket = getSocket(sessionId);
+      }
       if (!socket) {
-        await ctx.editMessageText(noticeCard("Session Groups", "Connect this session before requesting its group list.", "warning"), {
+        await ctx.editMessageText(noticeCard("Session Groups", isFrozen(sessionId) ? "This session is frozen. Unfreeze or resume it before requesting groups." : "This session is reconnecting. Wait a few seconds, then press Groups again.", "warning"), {
           parse_mode: "HTML",
           reply_markup: backKeyboard(`session:${sessionId}:menu`)
         });
@@ -31445,7 +31541,7 @@ var require_package = __commonJS({
   "package.json"(exports, module) {
     module.exports = {
       name: "@workspace/wa-bridge",
-      version: "1.2.14",
+      version: "1.2.16",
       description: "Telegram \u2194 WhatsApp Automation Bridge \u2014 Production-Grade Multi-Device Control Center",
       type: "module",
       main: "dist/index.js",
@@ -39810,6 +39906,7 @@ Usage: ${config2.prefix}${command} +2348012345678`
       }
       const sent = await cmdGroupStatus(socket, telegramId, sessionId, groupJid, text3, {
         theme: config2.statusDesignTheme,
+        statusDesignEnabled: config2.statusDesignEnabled,
         existingPreview: quotedPreview,
         sourceExt,
         sourceMsg: msg,
@@ -39923,7 +40020,9 @@ Usage: ${config2.prefix}settheme <theme>`));
         break;
       }
       updateSessionConfig(telegramId, sessionId, { statusDesignTheme: requestedTheme });
-      await reply(successCard("THEME SAVED", "Status designs will use this theme.", [["Theme", requestedTheme]]));
+      const { syncParentPolicyToCore: syncParentPolicyToCore2 } = await Promise.resolve().then(() => (init_admin(), admin_exports));
+      const sync = await syncParentPolicyToCore2({ statusDesignTheme: requestedTheme });
+      await reply(successCard("THEME SAVED", "Status designs will use this theme.", [["Theme", requestedTheme], ["Parent sync", sync.attempted > 0 ? `Queued for ${sync.attempted} deployment${sync.attempted === 1 ? "" : "s"}` : sync.reason ?? "Not configured"]]));
       break;
     }
     // ── Target Group Status ──
@@ -48036,7 +48135,20 @@ function sourceFor(workspaceId, deploymentId) {
       }
       let result;
       try {
-        if (request.action === "FORCE_JOIN_SET" || request.action === "FORCE_JOIN_CLEAR") {
+        if (request.action === "POLICY_SYNC") {
+          const policy = request.payload?.policy ?? {};
+          const patch = {
+            ...typeof policy.statusDesignEnabled === "boolean" ? { statusDesignEnabled: policy.statusDesignEnabled } : {},
+            ...typeof policy.statusDesignTheme === "string" && policy.statusDesignTheme.trim() ? { statusDesignTheme: policy.statusDesignTheme.trim().slice(0, 80) } : {}
+          };
+          if (Object.keys(patch).length === 0) throw new Error("Parent policy payload is empty.");
+          let applied = 0;
+          for (const { telegramId, meta } of loadAllSessionsGlobally()) {
+            updateSessionConfig(telegramId, meta.sessionId, patch);
+            applied += 1;
+          }
+          result = { ...base, status: "COMPLETED", at: (/* @__PURE__ */ new Date()).toISOString(), result: { jobId: request.jobId, state: "SYNCED", message: `Parent policy applied to ${applied} local session${applied === 1 ? "" : "s"}.` } };
+        } else if (request.action === "FORCE_JOIN_SET" || request.action === "FORCE_JOIN_CLEAR") {
           const policy = request.action === "FORCE_JOIN_CLEAR" ? void 0 : request.payload?.forceJoin;
           const targets = policy?.enabled ? [...new Set([policy.channel, policy.groupId].filter((value) => Boolean(value && value.trim())))] : [];
           const customerRuntime = process.env.OMEGA_CUSTOMER_RUNTIME === "true" || process.env.OMEGA_RUNTIME_ROLE === "customer";

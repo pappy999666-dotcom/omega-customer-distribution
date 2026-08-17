@@ -1,7 +1,7 @@
 {
-  "version": "1.2.14",
+  "version": "1.2.16",
   "channel": "stable",
-  "generatedAt": "2026-08-17T12:51:47.119033+00:00",
+  "generatedAt": "2026-08-17T14:05:46.759011+00:00",
   "files": [
     {
       "path": ".npmrc",
@@ -13,15 +13,15 @@
     },
     {
       "path": "index.js",
-      "sha256": "a405eeebda19b8a3d53c8b6d521b4a8addf6ec042243f7766e7c627495c9045e"
+      "sha256": "7b9ede01f48e6e2c45dd5b1e5022d05460dc05a55159586b2f14fbca46fb46fe"
     },
     {
       "path": "package-lock.json",
-      "sha256": "527a1e7953126e077a42c5c3e189dd948fa71cb0cf16e887541e3b5b795bb78b"
+      "sha256": "4bb1569450760f179dfa7865c874c863043d600a614e58c5fc2e4234e6a6942d"
     },
     {
       "path": "package.json",
-      "sha256": "b1b702bf25d79fb80decec34d81bfe6285f219b8a178a086e242cdb404fa9549"
+      "sha256": "6de744472d99dcba13185d5bc301a33f92d1fe9cf0f0ab770c1e3530dd4a3727"
     },
     {
       "path": "public/app.js",
@@ -37,7 +37,7 @@
     },
     {
       "path": "runtime.mjs",
-      "sha256": "c3291c06989420965a81a33d7a00de6a7a1cbb44add582f68a5a25b6d609b4ef"
+      "sha256": "f3d1515126b9c736787911b8994ab96aea03d087d7b9d24589885cd4f366f169"
     },
     {
       "path": "vendor/omega-client/index.js",
@@ -50,6 +50,10 @@
     {
       "path": "vendor/omega-client/package.json",
       "sha256": "33a53923f85948e8d105218392bb73a5b0e2d5b3e3fd59881e681aa0c931242b"
+    },
+    {
+      "path": "vendor/yt-dlp/yt-dlp",
+      "sha256": "495be29ff4d9d4e9be7eabdfef225221e5d5282e77f2f505abc6dca80349f3fd"
     }
   ]
 }

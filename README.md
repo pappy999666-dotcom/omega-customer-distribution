@@ -1,4 +1,4 @@
-# Omega Customer Bot 1.2.14
+# Omega Customer Bot 1.2.16
 
 This repository publishes the source-protected Omega customer runtime. Customers deploy with one file: the root `index.js` bootstrap. It downloads the verified stable runtime, installs production dependencies, preserves the previous working release when an update fails, and starts the local bot.
 
@@ -20,7 +20,7 @@ If Telegram is enabled, the setup asks for your owner chat ID. Open the parent O
 
 The setup then asks for a WhatsApp number. Enter the full number with country code and no spaces, for example `2348012345678`. Pairing has a one-minute countdown. A successful session is preserved across restarts. Failed, expired, revoked, or abandoned pairing attempts are removed immediately, so stale Pair or Resume buttons are not retained.
 
-On later restarts, completed Telegram setup, owner identity, and existing WhatsApp sessions are reused. Only missing configuration is requested. The customer owner can use the Telegram **Restart Customer Bot** button or `/restart`; the panel process manager will bring the bot back with saved sessions and settings. Stable runtime **1.2.7** also recovers stale same-container ownership after an unresponsive previous process and reopens setup when Telegram is configured but `TELEGRAM_OWNER_ID` is missing. If the panel still reports a live owner, press **Stop**, wait for the old process to exit, and then press **Start** once.
+On later restarts, completed Telegram setup, owner identity, and existing WhatsApp sessions are reused. Only missing configuration is requested. The customer owner can use the Telegram **Restart Customer Bot** button or `/restart`; the panel process manager will bring the bot back with saved sessions and settings. The stable runtime also recovers stale same-container ownership after an unresponsive previous process and reopens setup when Telegram is configured but `TELEGRAM_OWNER_ID` is missing. If the panel still reports a live owner, press **Stop**, wait for the old process to exit, and then press **Start** once.
 
 ## Optional Redis
 
@@ -86,4 +86,4 @@ The customer release excludes TypeScript source, source maps, panel credentials,
 
 Customer deployments keep using their own Telegram bot token. When the operator allocates Force Join, the customer runtime sends the signed-in Telegram user ID through the authenticated Core connection; the parent Core service checks membership using the operator bot in the required channel or group. The customer bot token is not used to inspect the operator’s channel.
 
-Users who have not joined receive a Join button and an **I Joined** button. Access remains restricted until the parent verification succeeds. The parent bot must be an administrator in the required channel or group for membership checks to work.
+Users who have not joined receive a Join button and an **I Joined** button, and access is restricted when the parent verifier returns an explicit non-member result. If the parent verifier is temporarily unavailable, the customer shows the configured targets and keeps ordinary commands available rather than locking out members; verification resumes automatically. The parent bot must be an administrator in the required channel or group for membership checks to work.
