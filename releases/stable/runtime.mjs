@@ -31255,7 +31255,7 @@ var require_package = __commonJS({
   "package.json"(exports, module) {
     module.exports = {
       name: "@workspace/wa-bridge",
-      version: "1.2.8",
+      version: "1.2.9",
       description: "Telegram \u2194 WhatsApp Automation Bridge \u2014 Production-Grade Multi-Device Control Center",
       type: "module",
       main: "dist/index.js",
@@ -47503,19 +47503,22 @@ function acquireRuntimeLease() {
   fs33.mkdirSync(WORKSPACE_ROOT, { recursive: true, mode: 448 });
   const existing = readLease();
   if (existing && existing.pid !== process.pid && pidAlive(existing.pid)) {
-    const sameHostCustomerTakeover = sameHostCustomerTakeoverAllowed(existing);
-    const stale = staleHeartbeat(existing);
-    if (!sameHostCustomerTakeover && !stale) {
+    if (sameHostCustomerTakeoverAllowed(existing)) {
+      throw new Error(
+        `Omega workspace is still owned by a live customer process (pid ${existing.pid}). This runtime will not kill the panel container from inside itself. Press Stop, wait until the server is Offline, then press Start once.`
+      );
+    }
+    if (!staleHeartbeat(existing)) {
       throw new Error(
         `Omega workspace is already owned by a live ${existing.role} process (pid ${existing.pid} on ${existing.hostname}). Stop that runtime before starting another one.`
       );
     }
-    logger.warn("[RuntimeLease] Taking over previous same-host runtime lease", {
+    logger.warn("[RuntimeLease] Taking over stale non-customer runtime lease", {
       pid: existing.pid,
       role: existing.role,
       heartbeatAt: existing.heartbeatAt,
       staleMs: Number.isFinite(Date.parse(existing.heartbeatAt)) ? Date.now() - Date.parse(existing.heartbeatAt) : void 0,
-      takeoverMode: sameHostCustomerTakeover ? "customer-restart" : "stale-heartbeat"
+      takeoverMode: "stale-heartbeat"
     });
     try {
       process.kill(existing.pid, "SIGTERM");

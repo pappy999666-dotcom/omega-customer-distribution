@@ -1,4 +1,4 @@
-# Omega Customer Bot 1.2.8
+# Omega Customer Bot 1.2.9
 
 This repository publishes the source-protected Omega customer runtime. Customers deploy with one file: the root `index.js` bootstrap. It downloads the verified stable runtime, installs production dependencies, preserves the previous working release when an update fails, and starts the local bot.
 
