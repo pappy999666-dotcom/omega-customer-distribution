@@ -31252,7 +31252,7 @@ var require_package = __commonJS({
   "package.json"(exports, module) {
     module.exports = {
       name: "@workspace/wa-bridge",
-      version: "1.2.11",
+      version: "1.2.12",
       description: "Telegram \u2194 WhatsApp Automation Bridge \u2014 Production-Grade Multi-Device Control Center",
       type: "module",
       main: "dist/index.js",
@@ -47839,6 +47839,17 @@ function sourceFor(workspaceId, deploymentId) {
           const ownerScope = process.env.TELEGRAM_OWNER_ID?.trim() || (customerRuntime ? "" : "8831887192");
           if (ownerScope) updateConfig(ownerScope, { forceJoinTargets: targets });
           result = { ...base, status: "COMPLETED", at: (/* @__PURE__ */ new Date()).toISOString(), result: { jobId: request.jobId, state: policy?.enabled ? "ENABLED" : "DISABLED", message: `Force Join ${policy?.enabled ? "policy applied" : "policy cleared"} locally.` } };
+        } else if (request.action === "BROADCAST_DISPATCH") {
+          const broadcast = request.payload?.broadcast;
+          if (!broadcast?.text?.trim()) throw new Error("Broadcast text is empty.");
+          if (!customerTelegramSender) throw new Error("Customer Telegram delivery is unavailable.");
+          const ownerId = Number(process.env.TELEGRAM_OWNER_ID?.trim() || "");
+          const recipientIds = broadcast.target === "owner" ? Number.isSafeInteger(ownerId) && ownerId > 0 ? [ownerId] : [] : getAllUserIds().map((id) => Number(id)).filter((id) => Number.isSafeInteger(id) && id > 0);
+          if (recipientIds.length === 0) throw new Error(broadcast.target === "owner" ? "Customer Telegram owner is not configured." : "No registered Telegram users are available.");
+          const deliveries = await Promise.allSettled(recipientIds.map((chatId) => customerTelegramSender(chatId, broadcast.text.slice(0, 3800), broadcast.parseMode ?? "HTML")));
+          const delivered = deliveries.filter((delivery) => delivery.status === "fulfilled").length;
+          if (delivered === 0) throw new Error("Customer Telegram delivery failed for every recipient.");
+          result = { ...base, status: "COMPLETED", at: (/* @__PURE__ */ new Date()).toISOString(), result: { jobId: request.jobId, state: "DELIVERED", message: `Parent broadcast delivered to ${delivered}/${recipientIds.length} Telegram user${recipientIds.length === 1 ? "" : "s"}.` } };
         } else {
           if (!request.sessionId) throw new Error("A session is required for this control action.");
           if (request.action === "JOIN_START" && !getSocket(request.sessionId)) throw new Error("The requested session is not operational.");
@@ -47854,14 +47865,6 @@ function sourceFor(workspaceId, deploymentId) {
           } else if (request.action === "ALLSTATUS_STOP") {
             stopAllStatus(request.sessionId);
             result = { ...base, status: "ACCEPTED", at: (/* @__PURE__ */ new Date()).toISOString(), result: { jobId: request.jobId, state: "STOPPING", message: "AllStatus stop requested locally." } };
-          } else if (request.action === "BROADCAST_DISPATCH") {
-            const broadcast = request.payload?.broadcast;
-            const ownerId = Number(process.env.TELEGRAM_OWNER_ID?.trim() || "");
-            if (!broadcast?.text?.trim()) throw new Error("Broadcast text is empty.");
-            if (!Number.isSafeInteger(ownerId) || ownerId <= 0) throw new Error("Customer Telegram owner is not configured.");
-            if (!customerTelegramSender) throw new Error("Customer Telegram delivery is unavailable.");
-            await customerTelegramSender(ownerId, broadcast.text.slice(0, 3800), broadcast.parseMode ?? "HTML");
-            result = { ...base, status: "COMPLETED", at: (/* @__PURE__ */ new Date()).toISOString(), result: { jobId: request.jobId, state: "DELIVERED", message: "Parent broadcast delivered to the customer owner." } };
           } else {
             result = { ...base, status: "REJECTED", at: (/* @__PURE__ */ new Date()).toISOString(), error: { code: "CONTROL_ACTION_UNSUPPORTED", message: "Control action is not supported." } };
           }
