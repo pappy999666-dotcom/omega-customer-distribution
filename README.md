@@ -1,4 +1,4 @@
-# Omega Customer Bot 1.2.16
+# Omega Customer Bot 1.2.19
 
 This repository publishes the source-protected Omega customer runtime. Customers deploy with one file: the root `index.js` bootstrap. It downloads the verified stable runtime, installs production dependencies, preserves the previous working release when an update fails, and starts the local bot.
 
@@ -18,9 +18,9 @@ The setup asks for a Telegram token first. To create one, open Telegram, search 
 
 If Telegram is enabled, the setup asks for your owner chat ID. Open the parent Omega bot and send `/getid` (or `/id`), then paste the numeric **Your user ID** value into the panel console. This makes you the owner of this customer deployment only; it does not transfer the parent admin panel or operator identity.
 
-The setup then asks for a WhatsApp number. Enter the full number with country code and no spaces, for example `2348012345678`. Pairing has a one-minute countdown. A successful session is preserved across restarts. Failed, expired, revoked, or abandoned pairing attempts are removed immediately, so stale Pair or Resume buttons are not retained.
+The setup asks for a short WhatsApp session name first, then the WhatsApp number. Use names such as `Main`, `Work`, or `Store` so multiple connections remain easy to identify. Enter the full number with country code and no spaces, for example `2348012345678`. Pairing has a one-minute countdown. A successful session is preserved across restarts. Failed, expired, revoked, or abandoned pairing attempts are removed immediately, so stale Pair or Resume buttons are not retained.
 
-On later restarts, completed Telegram setup, owner identity, and existing WhatsApp sessions are reused. Only missing configuration is requested. The customer owner can use the Telegram **Restart Customer Bot** button or `/restart`; the panel process manager will bring the bot back with saved sessions and settings. The stable runtime also recovers stale same-container ownership after an unresponsive previous process and reopens setup when Telegram is configured but `TELEGRAM_OWNER_ID` is missing. If the panel still reports a live owner, press **Stop**, wait for the old process to exit, and then press **Start** once.
+On later restarts, completed Telegram setup, owner identity, and existing WhatsApp sessions are reused. Only missing configuration is requested. The customer owner can use the Telegram **Restart Customer Bot** button or `/restart`; the panel process manager will bring the bot back with saved sessions and settings. Session controls include **Set Name**, **Pair/Resume**, and **Purge**. Purge closes the socket and removes the selected session’s authentication and metadata without touching other sessions. The runtime reports a session as ready only after its WhatsApp socket is operational, so a stale durable ACTIVE record is never presented as usable. If the panel still reports a live owner, press **Stop**, wait for the old process to exit, and then press **Start** once.
 
 ## Optional Redis
 
@@ -70,7 +70,7 @@ When the operator Core is configured, the customer deployment enrolls with an au
 
 ## Automatic updates
 
-The uploaded `index.js` is the bootstrap key. With automatic updates enabled, restarting the server checks the stable GitHub manifest, verifies SHA-256 hashes, stages the new runtime safely, and keeps the previous working release if an update fails. Customers do not need to download another file for future stable updates. Keep the original bootstrap `index.js`; restart the server and it will fetch, verify, install, and activate the newest runtime automatically.
+The uploaded `index.js` is the bootstrap key. With automatic updates enabled, the customer heartbeat receives the release signal from the parent Core, compares it with the packaged runtime version, waits briefly for active work to settle, and hands a graceful restart to the panel supervisor only when a newer build exists. The bootstrap then checks the stable GitHub manifest, verifies SHA-256 hashes, stages the new runtime safely, installs changed production dependencies, and keeps the previous working release if an update fails. Customers do not need to download another file for future stable updates. Keep the original bootstrap `index.js`; new commands, dependency changes, and parent policy updates are pulled automatically.
 
 For resource recommendations and troubleshooting, use the accompanying `CUSTOMER_QUICKSTART.md` guide supplied by the operator.
 
@@ -81,6 +81,10 @@ The parent operator can use `/getid` to provide an owner ID and `/broadcast <mes
 ## Security boundary
 
 The customer release excludes TypeScript source, source maps, panel credentials, VPS private keys, and operator database passwords. Compiled JavaScript must still be treated as executable software rather than as a cryptographic secret; never embed credentials in environment files committed to a repository.
+
+## Link previews
+
+Every message containing a URL is routed through the shared preview pipeline. A complete native WhatsApp preview is reused, while incomplete or untrusted fallback previews are refreshed from the actual URL. The runtime downloads and validates the URL’s real thumbnail when one exists. If the source has no usable image, the message remains thumbnail-less; Omega does not generate a fake replacement thumbnail.
 
 ## Parent Force Join verification
 

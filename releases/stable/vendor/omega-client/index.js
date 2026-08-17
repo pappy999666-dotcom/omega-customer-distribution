@@ -246,6 +246,7 @@ var Heartbeat = class {
   timer;
   running = false;
   current;
+  announcedUpdateBuildId;
   constructor(core, identity, capabilities, intervalMs, sources = {}) {
     this.core = core;
     this.identity = identity;
@@ -306,6 +307,12 @@ var Heartbeat = class {
       this.current = await this.core.heartbeat(request);
       if (this.current.capabilities)
         this.capabilities.set(this.current.capabilities);
+      const release = this.current.updateAvailable;
+      if (release && release.buildId !== this.announcedUpdateBuildId) {
+        this.announcedUpdateBuildId = release.buildId;
+        void Promise.resolve(this.sources.updateAvailable?.(release)).catch(() => {
+        });
+      }
     } catch {
     } finally {
       this.running = false;
@@ -551,8 +558,10 @@ var ClientRuntime = class {
   pendingJobEvents = [];
   identity;
   shuttingDown = false;
+  onUpdateAvailable;
   constructor(options = {}) {
     this.config = loadClientConfig(options.env);
+    this.onUpdateAvailable = options.onUpdateAvailable;
     this.workload = options.workload ?? new PendingLocalWorkloadAdapter();
     this.logger = new AgentLogger(this.config.logLevel);
     this.core = new CoreClient({ apiUrl: this.config.apiUrl, accessToken: this.config.clientToken, registrationSecret: this.config.registrationSecret, fetchImpl: options.fetchImpl });
@@ -592,7 +601,8 @@ var ClientRuntime = class {
         rssBytes: process.memoryUsage().rss,
         heapUsedBytes: process.memoryUsage().heapUsed,
         activeWorkers: 0
-      })
+      }),
+      updateAvailable: (release) => this.onUpdateAvailable?.(release)
     });
     this.heartbeat.start();
     void this.refreshStorageLease();

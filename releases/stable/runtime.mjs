@@ -2044,8 +2044,8 @@ async function normalizeThumbnail(input2) {
     return void 0;
   }
   try {
-    const sharp6 = require2("sharp");
-    const meta = await sharp6(buf).metadata();
+    const sharp5 = require2("sharp");
+    const meta = await sharp5(buf).metadata();
     const w = meta.width ?? 0;
     const h = meta.height ?? 0;
     if (w < 100 || h < 100) return void 0;
@@ -2058,7 +2058,7 @@ async function normalizeThumbnail(input2) {
       { size: 320, quality: 70 }
     ];
     for (const { size, quality } of attempts) {
-      const resized = await sharp6(buf).resize(size, size, { fit: "inside", withoutEnlargement: true, kernel: "lanczos3" }).jpeg({ quality, progressive: false, mozjpeg: false }).toBuffer();
+      const resized = await sharp5(buf).resize(size, size, { fit: "inside", withoutEnlargement: true, kernel: "lanczos3" }).jpeg({ quality, progressive: false, mozjpeg: false }).toBuffer();
       if (resized.length <= 512e3) {
         PreviewLogger.thumbnailNormalized("normalize", buf.length, resized.length);
         return resized;
@@ -2336,7 +2336,6 @@ var init_PreviewValidator = __esm({
 });
 
 // src/preview-engine/PreviewResolver.ts
-import sharp from "sharp";
 function imageUrlFromValue(value, depth = 0) {
   if (depth > 3 || !value) return void 0;
   if (typeof value === "string" && /^https?:\/\//i.test(value)) return value;
@@ -2363,52 +2362,19 @@ function imageUrlFromValue(value, depth = 0) {
   }
   return void 0;
 }
-function xmlEscape(value) {
-  return value.replace(/[&<>'"]/gu, (char) => {
-    switch (char) {
-      case "&":
-        return "&amp;";
-      case "<":
-        return "&lt;";
-      case ">":
-        return "&gt;";
-      case "'":
-        return "&apos;";
-      case '"':
-        return "&quot;";
-      default:
-        return char;
-    }
-  });
-}
-async function fallbackThumbnail(url, _title, _description) {
-  const cacheKey2 = `https://omega-fallback.invalid/${Buffer.from(url).toString("base64url").slice(0, 180)}`;
-  const cached = previewCache.getNormalizedThumbnail(cacheKey2);
-  if (cached) return Buffer.from(cached);
-  let host = "open.link";
-  try {
-    host = new URL(url).hostname.replace(/^www\./iu, "").slice(0, 34) || host;
-  } catch {
-  }
-  const safeHost = xmlEscape(host);
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="640" height="360" viewBox="0 0 640 360"><defs><linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#0b1024"/><stop offset=".52" stop-color="#182b55"/><stop offset="1" stop-color="#7b2f8e"/></linearGradient><linearGradient id="glow" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#62f6ff"/><stop offset="1" stop-color="#ff7ad9"/></linearGradient><filter id="blur"><feGaussianBlur stdDeviation="22"/></filter></defs><rect width="640" height="360" rx="28" fill="url(#bg)"/><circle cx="520" cy="48" r="112" fill="#62f6ff" opacity=".14" filter="url(#blur)"/><circle cx="130" cy="330" r="130" fill="#ff7ad9" opacity=".12" filter="url(#blur)"/><path d="M0 274 C140 212 206 330 344 266 S548 210 640 250" fill="none" stroke="#ffffff" stroke-opacity=".12" stroke-width="2"/><path d="M0 292 C140 230 206 348 344 284 S548 228 640 268" fill="none" stroke="#62f6ff" stroke-opacity=".22" stroke-width="2"/><rect x="38" y="42" width="92" height="92" rx="28" fill="#101a3b" stroke="url(#glow)" stroke-width="3"/><path d="M67 88h34M84 70v36M62 106l44-36" stroke="#ffffff" stroke-width="6" stroke-linecap="round" opacity=".92"/><text x="156" y="86" fill="#ffffff" font-family="Noto Color Emoji,Segoe UI Emoji,Arial,sans-serif" font-size="24">\u26A1 \u2726 \u25C9</text><text x="156" y="126" fill="#ffffff" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="34" font-weight="800" letter-spacing="1">OPEN LINK</text><text x="42" y="238" fill="#dffcff" font-family="Noto Color Emoji,Segoe UI Emoji,Arial,sans-serif" font-size="22">\u{1F517}  Tap  \xB7  Preview  \xB7  Explore</text><text x="42" y="286" fill="#9feaf4" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="18">${safeHost}</text><text x="42" y="324" fill="#ffb6e9" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="15" letter-spacing="2">OMEGA \u2022 LINK PREVIEW</text></svg>`;
-  const image = await sharp(Buffer.from(svg)).jpeg({ quality: 88, progressive: true }).toBuffer();
-  previewCache.setNormalizedThumbnail(cacheKey2, image);
-  return image;
-}
 async function finalizePreview(url, meta, thumbnail) {
   const parsed = new URL(url);
   const title2 = meta.title?.trim() || parsed.hostname;
   const description = meta.description?.trim() || `Open ${parsed.hostname}`;
   const hasThumbnail = Boolean(thumbnail?.length);
-  const finalThumbnail = hasThumbnail ? Buffer.from(thumbnail) : await fallbackThumbnail(url, title2, description);
+  const finalThumbnail = hasThumbnail ? Buffer.from(thumbnail) : void 0;
   return {
     ...meta,
     url,
     title: title2,
     description,
-    thumbnail: finalThumbnail,
-    thumbnailSource: meta.thumbnailSource ?? (hasThumbnail ? "link" : "fallback")
+    ...finalThumbnail ? { thumbnail: finalThumbnail } : {},
+    ...hasThumbnail ? { thumbnailSource: meta.thumbnailSource ?? "link" } : {}
   };
 }
 var PreviewResolver;
@@ -2440,7 +2406,7 @@ var init_PreviewResolver = __esm({
             metadata["id"] ?? metadata["jid"] ?? metadata["newsletter_jid"] ?? thread["id"] ?? thread["jid"] ?? thread["newsletter_jid"] ?? ""
           ).trim();
           const newsletterJid = channelId.includes("@") ? channelId : channelId ? `${channelId}@newsletter` : "";
-          const sourceThumbnail = existingPreview?.thumbnailSource !== "fallback" && PreviewValidator.isValidThumbnail(existingPreview?.thumbnail) ? PreviewCache.cloneBuffer(existingPreview.thumbnail) : void 0;
+          const sourceThumbnail = (existingPreview?.thumbnailSource === "native" || existingPreview?.thumbnailSource === "link") && PreviewValidator.isValidThumbnail(existingPreview?.thumbnail) ? PreviewCache.cloneBuffer(existingPreview.thumbnail) : void 0;
           let imageUrl = imageUrlFromValue(thread["picture"]) ?? imageUrlFromValue(metadata["picture"]);
           if (!imageUrl) {
             imageUrl = imageUrlFromValue(thread["image"]) ?? imageUrlFromValue(metadata["image"]);
@@ -2500,14 +2466,19 @@ var init_PreviewResolver = __esm({
             return { meta: meta2, stage: "Stage2_BaileysNative", thumbnail: thumbnail2, cached: false };
           }
         }
-        if (options.existingPreview?.url && options.existingPreview?.thumbnail) {
+        const existingThumbnail = options.existingPreview?.thumbnail;
+        const existingThumbnailSource = options.existingPreview?.thumbnailSource;
+        const trustedExistingThumbnail = Boolean(
+          existingThumbnail && PreviewValidator.isValidThumbnail(existingThumbnail) && (existingThumbnailSource === "native" || existingThumbnailSource === "link")
+        );
+        if (options.existingPreview?.url && trustedExistingThumbnail) {
           PreviewLogger.hydrating("Stage1_Passthrough", url);
           const meta2 = Object.freeze({
             ...options.existingPreview,
             url: options.existingPreview.url,
             fetchedAt: Date.now()
           });
-          const thumbnail2 = PreviewCache.cloneBuffer(options.existingPreview.thumbnail);
+          const thumbnail2 = PreviewCache.cloneBuffer(existingThumbnail);
           PreviewLogger.hydrated("Stage1_Passthrough", url);
           PreviewLogger.completeTrace({
             traceId,
@@ -2527,9 +2498,10 @@ var init_PreviewResolver = __esm({
           PreviewLogger.hydrating("Stage1_Passthrough", url);
           const existing = options.existingPreview;
           const refreshed = existing.imageUrl ? void 0 : await MetadataResolver.resolve(url).catch(() => void 0);
+          const trustedExisting = trustedExistingThumbnail ? existing : { ...existing, thumbnail: void 0, thumbnailSource: void 0 };
           const meta2 = Object.freeze({
             ...refreshed ?? {},
-            ...existing,
+            ...trustedExisting,
             url: existing.url,
             ...refreshed?.imageUrl && !existing.imageUrl ? { imageUrl: refreshed.imageUrl } : {},
             fetchedAt: Date.now()
@@ -14470,6 +14442,15 @@ function makeSessionId(telegramId, sessionName) {
   const shortId = uuid().slice(0, 8);
   return `${telegramId}_${safeName2}_${shortId}`;
 }
+function runtimeSessionStatus(meta) {
+  const health = getSessionHealth(meta.sessionId);
+  if (health?.state === "RECONNECTING" || health?.state === "RECONNECT_FAILED") return "RECONNECTING";
+  if (health?.state === "DEGRADED" || health?.state === "UNHEALTHY") {
+    return getSocket(meta.sessionId) ? meta.status : "RECONNECTING";
+  }
+  if (meta.status === "ACTIVE" && !getSocket(meta.sessionId)) return "CONNECTING";
+  return meta.status;
+}
 async function handleSessionsList(ctx, page = 0) {
   const sessions2 = Object.values(loadAllSessions(ctx.telegramId)).filter((s) => s.status !== "PURGED");
   if (sessions2.length === 0) {
@@ -14487,7 +14468,7 @@ async function handleSessionsList(ctx, page = 0) {
     id: s.sessionId,
     phone: s.phone,
     label: s.label,
-    status: s.status
+    status: runtimeSessionStatus(s)
   }));
   if (ctx.callbackQuery) {
     await ctx.editMessageText(text2, {
@@ -15012,6 +14993,7 @@ var init_session = __esm({
     init_formatter();
     init_join_manager();
     init_auto_join();
+    init_session_health();
     activeJoinSubs = /* @__PURE__ */ new Map();
     bridgeSessions = /* @__PURE__ */ new Map();
   }
@@ -23792,8 +23774,8 @@ ${lines}`,
       }
       const { sessionCard: sessionCard2 } = await Promise.resolve().then(() => (init_formatter(), formatter_exports));
       await ctx.editMessageText(
-        sessionCard2({ sessionId, label: meta.label, phone: meta.phone, status: meta.status, paired: meta.status === "ACTIVE", reconnectUntil: meta.reconnectUntil }),
-        { parse_mode: "HTML", reply_markup: sessionMenuKeyboard2(sessionId, meta.status) }
+        sessionCard2({ sessionId, label: meta.label, phone: meta.phone, status: runtimeSessionStatus(meta), paired: Boolean(getSocket(sessionId)), reconnectUntil: meta.reconnectUntil }),
+        { parse_mode: "HTML", reply_markup: sessionMenuKeyboard2(sessionId, runtimeSessionStatus(meta)) }
       ).catch(() => {
       });
       return;
@@ -25975,7 +25957,7 @@ var init_bot = __esm({
 
 // src/services/menu-canvas.ts
 import fs20 from "node:fs";
-import sharp2 from "sharp";
+import sharp from "sharp";
 function escapeXml(value) {
   return String(value ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&apos;");
 }
@@ -26027,7 +26009,7 @@ async function profilePictureDataUri(options) {
   try {
     const source = await profilePicBuffer(options.socket, selfJid);
     if (!source) return void 0;
-    const normalized = await sharp2(source).resize(220, 220, { fit: "cover" }).png().toBuffer();
+    const normalized = await sharp(source).resize(220, 220, { fit: "cover" }).png().toBuffer();
     return `data:image/png;base64,${normalized.toString("base64")}`;
   } catch {
     return void 0;
@@ -26160,7 +26142,7 @@ function buildSvg(data) {
 }
 async function generateMenuCanvas(options) {
   const svg = buildSvg(await canvasData(options));
-  return sharp2(Buffer.from(svg)).png().toBuffer();
+  return sharp(Buffer.from(svg)).png().toBuffer();
 }
 async function resolveMenuMedia(options) {
   const configured2 = options.meta?.menuMedia;
@@ -26393,7 +26375,7 @@ var init_a2v_store = __esm({
 });
 
 // src/whatsapp/commands/sticker-media.ts
-import sharp3 from "sharp";
+import sharp2 from "sharp";
 import { execFile as execFile3 } from "node:child_process";
 import { promises as fs22 } from "node:fs";
 import os2 from "node:os";
@@ -26425,7 +26407,7 @@ async function encodeStaticSticker(source) {
     if (source.length > MAX_STICKER_SOURCE_BYTES) throw new Error("Image is too large to convert safely.");
     let last;
     for (const quality of [92, 86, 80, 74, 68]) {
-      const output2 = await sharp3(source, { failOn: "none" }).resize(512, 512, {
+      const output2 = await sharp2(source, { failOn: "none" }).resize(512, 512, {
         fit: "contain",
         withoutEnlargement: true,
         background: { r: 0, g: 0, b: 0, alpha: 0 }
@@ -30144,7 +30126,7 @@ __export(media_exports, {
   resolveInteractionReply: () => resolveInteractionReply
 });
 import fsp7 from "node:fs/promises";
-import sharp4 from "sharp";
+import sharp3 from "sharp";
 function mediaError(command, err, prefix) {
   if (err instanceof MediaDownloadError) {
     return errorCard("MEDIA", err.message) + `
@@ -30393,12 +30375,12 @@ async function cmdCv(ctx) {
     let converted;
     if (animated) {
       intermediatePath = dm.tempPath("gif");
-      await sharp4(bytes, { animated: true }).gif({ effort: 3 }).toFile(intermediatePath);
+      await sharp3(bytes, { animated: true }).gif({ effort: 3 }).toFile(intermediatePath);
       converted = await dm.toMp4(intermediatePath, "converted-sticker");
       outputPath = converted.filePath;
     } else {
       outputPath = dm.tempPath("png");
-      await sharp4(bytes).png().toFile(outputPath);
+      await sharp3(bytes).png().toFile(outputPath);
       const stat = await fsp7.stat(outputPath);
       converted = {
         kind: "image",
@@ -31541,7 +31523,7 @@ var require_package = __commonJS({
   "package.json"(exports, module) {
     module.exports = {
       name: "@workspace/wa-bridge",
-      version: "1.2.16",
+      version: "1.2.19",
       description: "Telegram \u2194 WhatsApp Automation Bridge \u2014 Production-Grade Multi-Device Control Center",
       type: "module",
       main: "dist/index.js",
@@ -36923,7 +36905,7 @@ __export(qc_sticker_exports, {
   parseBgFlag: () => parseBgFlag,
   segmentGraphemes: () => segmentGraphemes
 });
-import sharp5 from "sharp";
+import sharp4 from "sharp";
 import fs28 from "node:fs";
 function resolveEmojiFontFamily() {
   if (emojiFontResolved) return cachedEmojiFontFamily;
@@ -37153,7 +37135,7 @@ async function cmdQcSticker(socket, telegramId, sessionId, groupJid, text2, conf
       return;
     }
     const svg = buildSvg2(cleanText, bg, config2);
-    let stickerBuffer = await sharp5(Buffer.from(svg)).resize(CANVAS, CANVAS, { fit: "contain", background: { r: 0, g: 0, b: 0, alpha: 0 } }).ensureAlpha().webp({ quality: 85 }).toBuffer();
+    let stickerBuffer = await sharp4(Buffer.from(svg)).resize(CANVAS, CANVAS, { fit: "contain", background: { r: 0, g: 0, b: 0, alpha: 0 } }).ensureAlpha().webp({ quality: 85 }).toBuffer();
     validateWebP(stickerBuffer);
     stickerBuffer = addStickerMetadata(stickerBuffer, config2.packname || "PAPPY", config2.author || "OMEGA");
     validateWebP(stickerBuffer);
@@ -37498,8 +37480,8 @@ async function sendGameResponse(socket, telegramId, response2) {
     ...response2.editKey ? { edit: response2.editKey } : {}
   };
   if (response2.visualSvg) {
-    const sharp6 = (await import("sharp")).default;
-    const buffer = await sharp6(Buffer.from(response2.visualSvg, "utf8")).png().toBuffer();
+    const sharp5 = (await import("sharp")).default;
+    const buffer = await sharp5(Buffer.from(response2.visualSvg, "utf8")).png().toBuffer();
     options.media = {
       type: "image",
       buffer,
@@ -42001,7 +41983,8 @@ __export(socket_manager_exports, {
   setAlertCallback: () => setAlertCallback,
   setConnectedCallback: () => setConnectedCallback,
   setEventCallback: () => setEventCallback,
-  unfreezeSession: () => unfreezeSession2
+  unfreezeSession: () => unfreezeSession2,
+  waitForSessionOperational: () => waitForSessionOperational
 });
 import makeWASocket from "@crysnovax/baileys";
 import * as Baileys from "@crysnovax/baileys";
@@ -42056,6 +42039,24 @@ function groupMetadataCache(sessionId) {
 }
 function clearGroupMetadataCache(sessionId) {
   groupMetadataCaches.delete(sessionId);
+}
+function summarizeBaileysLogValue(value, depth = 0) {
+  if (typeof value === "string") return value.slice(0, 600);
+  if (value instanceof Error) return `${value.name}: ${value.message}`.slice(0, 600);
+  if (!value || typeof value !== "object") return String(value ?? "");
+  if (depth >= 2) return "[object]";
+  const record = value;
+  const fields = ["name", "message", "code", "reason", "status", "messageType", "isSessionRecordError", "type"];
+  const parts = [];
+  for (const field of fields) {
+    const item = record[field];
+    if (item === void 0 || item === null) continue;
+    parts.push(`${field}=${summarizeBaileysLogValue(item, depth + 1)}`);
+  }
+  for (const field of ["err", "error", "cause"]) {
+    if (record[field] !== void 0) parts.push(`${field}:${summarizeBaileysLogValue(record[field], depth + 1)}`);
+  }
+  return parts.join(" ").slice(0, 1200) || "[object]";
 }
 function normalizePairingPhone(phone, options = {}) {
   const input2 = String(phone ?? "").trim();
@@ -42258,6 +42259,18 @@ function getSocket(sessionId) {
 function getAllSockets() {
   return registry;
 }
+async function waitForSessionOperational(sessionId, timeoutMs2 = 45e3) {
+  const deadline = Date.now() + Math.max(1e3, timeoutMs2);
+  while (Date.now() < deadline) {
+    const health = getSessionHealth(sessionId);
+    const terminal = health?.state === "LOGGED_OUT" || health?.state === "STOPPED" || health?.state === "RECONNECT_FAILED";
+    if (terminal) return false;
+    const socket = getSocket(sessionId);
+    if (socket && (!health || ["CONNECTED", "HEALTHY", "DEGRADED"].includes(health.state))) return true;
+    await sleep(250);
+  }
+  return false;
+}
 function getSocketGeneration(sessionId) {
   return socketGenerations.get(sessionId) ?? 0;
 }
@@ -42391,7 +42404,7 @@ async function initSocket(meta, opts = {}) {
       level: process.env.WA_BAILEYS_LOG_LEVEL ?? "error",
       hooks: {
         logMethod(inputArgs, method) {
-          const text2 = inputArgs.map((value) => typeof value === "string" ? value : JSON.stringify(value)).join(" ");
+          const text2 = inputArgs.map((value) => summarizeBaileysLogValue(value)).join(" ");
           const lower = text2.toLowerCase();
           const decryptSignal = /bad mac|messagecountererror|failed to decrypt|decryption failure|session.*mismatch/i.test(text2);
           const benignGroupCiphertext = /messageType["']?\s*[:=]\s*["']skmsg/i.test(text2) && /isSessionRecordError["']?\s*[:=]\s*false/i.test(text2) && /failed to decrypt/i.test(lower);
@@ -43016,7 +43029,7 @@ var init_socket_manager = __esm({
     CRYPTO_FAILURE_WINDOW_MS = Math.max(3e4, Number.parseInt(process.env.WA_CRYPTO_FAILURE_WINDOW_MS ?? "60_000", 10) || 6e4);
     CRYPTO_QUARANTINE_MS = Math.min(
       MAX_REGISTERED_RECOVERY_DELAY_MS,
-      Math.max(5 * 6e4, Number.parseInt(process.env.WA_CRYPTO_QUARANTINE_MS ?? "600000", 10) || 6e5)
+      Math.max(6e4, Number.parseInt(process.env.WA_CRYPTO_QUARANTINE_MS ?? "120000", 10) || 12e4)
     );
     globalEventCallback = null;
     alertCallback = null;
@@ -43882,10 +43895,36 @@ function withWorkspaceMutationLock(telegramId, work) {
     }
   }
 }
+function bucketCacheKey(telegramId, bucket) {
+  return `${telegramId}:${bucket}`;
+}
+function cloneBucketEntries(entries) {
+  return entries.map((entry) => ({
+    ...entry,
+    ...entry.sourceSessionIds ? { sourceSessionIds: [...entry.sourceSessionIds] } : {},
+    ...entry.discoverySources ? { discoverySources: [...entry.discoverySources] } : {}
+  }));
+}
+function invalidateBucketCache(telegramId, bucket) {
+  bucketCache.delete(bucketCacheKey(telegramId, bucket));
+}
+function cacheBucket(telegramId, bucket, stat, entries) {
+  if (bucketCache.size >= MAX_BUCKET_CACHE_ENTRIES) {
+    const oldest = bucketCache.keys().next().value;
+    if (oldest) bucketCache.delete(oldest);
+  }
+  bucketCache.set(bucketCacheKey(telegramId, bucket), {
+    mtimeMs: stat.mtimeMs,
+    ctimeMs: stat.ctimeMs,
+    size: stat.size,
+    entries
+  });
+}
 function writeBucket(telegramId, bucket, entries) {
   const normalized = entries.map(normalizeEntry);
   const unique = [...new Map(normalized.map((entry) => [entry.canonicalKey, entry])).values()];
   atomicWriteJson2(bucketPath(telegramId, bucket), unique);
+  invalidateBucketCache(telegramId, bucket);
 }
 function mutateBucket(telegramId, bucket, updater) {
   return withWorkspaceMutationLock(telegramId, () => {
@@ -43915,11 +43954,19 @@ function normalizeEntry(entry) {
 }
 function loadBucket(telegramId, bucket) {
   const p = bucketPath(telegramId, bucket);
-  if (!fs30.existsSync(p)) return [];
+  const key2 = bucketCacheKey(telegramId, bucket);
   try {
+    const stat = fs30.statSync(p);
+    const cached = bucketCache.get(key2);
+    if (cached && cached.mtimeMs === stat.mtimeMs && cached.ctimeMs === stat.ctimeMs && cached.size === stat.size) {
+      return cloneBucketEntries(cached.entries);
+    }
     const parsed = JSON.parse(fs30.readFileSync(p, "utf8"));
-    return Array.isArray(parsed) ? parsed.filter((entry) => Boolean(entry && typeof entry === "object")).map(normalizeEntry) : [];
+    const entries = Array.isArray(parsed) ? parsed.filter((entry) => Boolean(entry && typeof entry === "object")).map(normalizeEntry) : [];
+    cacheBucket(telegramId, bucket, stat, entries);
+    return cloneBucketEntries(entries);
   } catch {
+    bucketCache.delete(key2);
     return [];
   }
 }
@@ -44655,7 +44702,7 @@ function clearGlobalMenuUrl() {
   savePlatformConfig(config2);
   logger.info("[Platform] Global menu URL cleared");
 }
-var execFileAsync4, __dirname3, WORKSPACE_ROOT, sessionOwnerIndex, omniMigrationDone, purgeLocks, BUCKET_LOCK_TTL_MS, MAX_MERGE_ATTEMPTS, MERGE_VALIDATION_LEASE_TTL_MS, PLATFORM_CONFIG_PATH;
+var execFileAsync4, __dirname3, WORKSPACE_ROOT, sessionOwnerIndex, omniMigrationDone, purgeLocks, BUCKET_LOCK_TTL_MS, bucketCache, MAX_BUCKET_CACHE_ENTRIES, MAX_MERGE_ATTEMPTS, MERGE_VALIDATION_LEASE_TTL_MS, PLATFORM_CONFIG_PATH;
 var init_workspace = __esm({
   "src/services/workspace.ts"() {
     "use strict";
@@ -44674,6 +44721,8 @@ var init_workspace = __esm({
     omniMigrationDone = false;
     purgeLocks = /* @__PURE__ */ new Map();
     BUCKET_LOCK_TTL_MS = 6e4;
+    bucketCache = /* @__PURE__ */ new Map();
+    MAX_BUCKET_CACHE_ENTRIES = 2048;
     MAX_MERGE_ATTEMPTS = 3;
     MERGE_VALIDATION_LEASE_TTL_MS = 5 * 6e4;
     PLATFORM_CONFIG_PATH = path27.join(WORKSPACE_ROOT, "_platform", "config.json");
@@ -48027,6 +48076,31 @@ import fs35 from "node:fs";
 import path32 from "node:path";
 var runtime;
 var customerTelegramSender;
+var scheduledUpdateBuildId;
+var updateRestartTimer;
+function scheduleCustomerRuntimeUpdate(release) {
+  if (process.env.OMEGA_CUSTOMER_RUNTIME !== "true" && process.env.OMEGA_RUNTIME_ROLE !== "customer") return;
+  if (process.env.OMEGA_AUTO_UPDATE === "false" || release.buildId === scheduledUpdateBuildId) return;
+  const currentVersion = process.env.OMEGA_RUNTIME_VERSION?.trim();
+  if (!currentVersion) {
+    logger.warn("[PterodactylAdapter] Runtime version is unknown; refusing automatic restart until the packaged version is detected");
+    return;
+  }
+  if (currentVersion === release.version) return;
+  scheduledUpdateBuildId = release.buildId;
+  logger.info("[PterodactylAdapter] Verified runtime update available; scheduling graceful panel restart", {
+    version: release.version,
+    buildId: release.buildId
+  });
+  updateRestartTimer = setTimeout(() => {
+    updateRestartTimer = void 0;
+    if (process.env.OMEGA_SHUTTING_DOWN === "true") return;
+    process.env.OMEGA_SHUTTING_DOWN = "true";
+    logger.info("[PterodactylAdapter] Handing restart to panel supervisor for runtime update", { version: release.version });
+    process.kill(process.pid, "SIGTERM");
+  }, Math.max(1e3, Number.parseInt(process.env.OMEGA_UPDATE_GRACE_MS ?? "5000", 10) || 5e3));
+  updateRestartTimer.unref?.();
+}
 function setCustomerTelegramSender(sender) {
   customerTelegramSender = sender;
 }
@@ -48072,13 +48146,14 @@ function sourceFor(workspaceId, deploymentId) {
       return loadAllSessionsGlobally().map(({ meta }) => {
         const health = getSessionHealth(meta.sessionId);
         const healthState = health?.state;
-        const status = healthState === "RECONNECTING" ? "RECONNECTING" : healthState === "DEGRADED" || healthState === "UNHEALTHY" ? "DEGRADED" : meta.status;
+        const socketReady = Boolean(getSocket(meta.sessionId));
+        const status = healthState === "RECONNECTING" ? "RECONNECTING" : healthState === "DEGRADED" || healthState === "UNHEALTHY" ? "DEGRADED" : meta.status === "ACTIVE" && !socketReady ? "CONNECTING" : meta.status;
         return {
           sessionId: meta.sessionId,
           workspaceId,
           status,
           generation: getSocketGeneration(meta.sessionId),
-          ...healthState === "CONNECTED" || healthState === "HEALTHY" ? { connectedAt: iso(health?.lastConnectionEventAt, iso(meta.pairedAt)) } : {},
+          ...socketReady && (healthState === "CONNECTED" || healthState === "HEALTHY") ? { connectedAt: iso(health?.lastConnectionEventAt, iso(meta.pairedAt)) } : {},
           ...health?.lastError ? { lastErrorCode: "SESSION_TRANSPORT_ERROR" } : {}
         };
       });
@@ -48205,7 +48280,7 @@ function sourceFor(workspaceId, deploymentId) {
       };
     },
     hasCapability(feature) {
-      if (feature === "whatsapp") return loadAllSessionsGlobally().some(({ meta }) => getAllSockets().has(meta.sessionId));
+      if (feature === "whatsapp") return loadAllSessionsGlobally().some(({ meta }) => Boolean(getSocket(meta.sessionId)));
       if (feature === "telegram") return Boolean(process.env.TELEGRAM_BOT_TOKEN);
       return process.env[`OMEGA_DISABLE_${feature.toUpperCase()}`] !== "true";
     },
@@ -48270,7 +48345,7 @@ async function startPterodactylClientBridge() {
     const workspaceId = process.env.OMEGA_WORKSPACE_ID.trim();
     const deploymentId = process.env.OMEGA_DEPLOYMENT_ID.trim();
     const adapter = new MonolithWorkloadAdapter(workspaceId, deploymentId, sourceFor(workspaceId, deploymentId));
-    runtime = new ClientRuntime({ workload: adapter });
+    runtime = new ClientRuntime({ workload: adapter, onUpdateAvailable: scheduleCustomerRuntimeUpdate });
     await runtime.start();
     logger.info("[PterodactylAdapter] Core enrollment and local workload sync started", { workspaceId, deploymentId });
   } catch (error2) {
@@ -48279,6 +48354,8 @@ async function startPterodactylClientBridge() {
   }
 }
 async function stopPterodactylClientBridge() {
+  if (updateRestartTimer) clearTimeout(updateRestartTimer);
+  updateRestartTimer = void 0;
   const current = runtime;
   runtime = void 0;
   if (!current) return;
@@ -48433,6 +48510,7 @@ var YELLOW = "\x1B[33m";
 var DIM = "\x1B[2m";
 var WHITE = "\x1B[37m";
 var pendingPairingPhone;
+var pendingPairingLabel = "Main";
 function say(text2 = "") {
   output.write(`${text2}
 `);
@@ -48508,6 +48586,11 @@ function takeCustomerPairingPhone() {
   pendingPairingPhone = void 0;
   return phone;
 }
+function takeCustomerPairingLabel() {
+  const label = pendingPairingLabel.trim().slice(0, 40) || "Main";
+  pendingPairingLabel = "Main";
+  return label;
+}
 async function runCustomerFirstRun() {
   if (!CUSTOMER_MODE2) return;
   if (!CUSTOMER_OWNER_MODE) process.env.TELEGRAM_OWNER_ID = BUILTIN_OWNER_ID;
@@ -48529,6 +48612,7 @@ async function runCustomerFirstRun() {
   if (configuredPhone && !pendingPairingPhone) {
     const { normalizePairingPhone: normalizePairingPhone2 } = await Promise.resolve().then(() => (init_socket_manager(), socket_manager_exports));
     pendingPairingPhone = normalizePairingPhone2(configuredPhone, { requireAssignedCountryCode: true });
+    pendingPairingLabel = process.env.OMEGA_PAIRING_NAME?.trim().slice(0, 40) || "Main";
   }
   const panelInteractive = process.env.OMEGA_PLATFORM === "pterodactyl" && process.env.OMEGA_SETUP_NONINTERACTIVE !== "true";
   if ((!input.isTTY || !output.isTTY) && !panelInteractive) {
@@ -48573,6 +48657,11 @@ async function runCustomerFirstRun() {
     }
     say();
     say(`${WHITE}STEP 2 OF 2 \xB7 WHATSAPP PAIRING${RESET}`);
+    say(`${DIM}Give this WhatsApp connection a short name so you can identify it later (for example Main, Work, or Store).${RESET}`);
+    const configuredLabel = process.env.OMEGA_PAIRING_NAME?.trim();
+    const labelInput = configuredLabel || (await question(rl, "Session name (press Enter for Main): ")).trim();
+    pendingPairingLabel = (labelInput || "Main").replace(/\s+/gu, " ").slice(0, 40) || "Main";
+    say(`${GREEN}\u2713 Session name: ${pendingPairingLabel}${RESET}`);
     say(`${DIM}Enter the WhatsApp number in international format, for example 2348012345678.${RESET}`);
     say(`${DIM}Type SKIP, or wait one minute to continue with Telegram only.${RESET}`);
     const phoneResult = configuredPhone ? { value: configuredPhone, timedOut: false } : await questionWithCountdown(rl, "Send WhatsApp number with country code (or type SKIP): ", 6e4);
@@ -48583,7 +48672,7 @@ async function runCustomerFirstRun() {
     } else {
       say(`${YELLOW}\u2022 WhatsApp skipped${phoneResult.timedOut ? " after one minute" : ""}.${RESET}`);
     }
-    persistEnv({ TELEGRAM_BOT_TOKEN: process.env.TELEGRAM_BOT_TOKEN, TELEGRAM_OWNER_ID: CUSTOMER_OWNER_MODE ? process.env.TELEGRAM_OWNER_ID : BUILTIN_OWNER_ID });
+    persistEnv({ TELEGRAM_BOT_TOKEN: process.env.TELEGRAM_BOT_TOKEN, TELEGRAM_OWNER_ID: CUSTOMER_OWNER_MODE ? process.env.TELEGRAM_OWNER_ID : BUILTIN_OWNER_ID, OMEGA_PAIRING_NAME: pendingPairingLabel });
     saveMarker({
       telegramConfigured: configured(process.env.TELEGRAM_BOT_TOKEN),
       telegramSkipped: !configured(process.env.TELEGRAM_BOT_TOKEN),
@@ -49097,6 +49186,9 @@ async function bootstrap() {
     setAllStatusBotRef(botRef2);
     setLifecycleBotRef(botRef2);
   }
+  customerStartup.phase("PARENT SYNC", process.env.OMEGA_API_URL || process.env.OMEGA_CORE_URL ? "enrolling this deployment with the parent Core" : "Core URL not configured; local mode remains available");
+  await startPterodactylClientBridge();
+  if (process.env.OMEGA_API_URL || process.env.OMEGA_CORE_URL) customerStartup.success("parent sync started; local bot remains authoritative");
   if (redisAvailable) {
     const { resumeStalledJobs: resumeStalledJobs2, cleanupOrphanedJobs: cleanupOrphanedJobs2, startQueueMaintenance: startQueueMaintenance2 } = await Promise.resolve().then(() => (init_queue(), queue_exports));
     await resumeStalledJobs2();
@@ -49153,14 +49245,15 @@ async function bootstrap() {
   }, 15e3).unref();
   customerStartup.phase("WHATSAPP", "checking for a new pairing request or saved sessions");
   const pendingPairingPhone2 = takeCustomerPairingPhone();
+  const pendingPairingLabel2 = takeCustomerPairingLabel();
   if (pendingPairingPhone2) {
     const { saveSessionMeta: saveSessionMeta3 } = await Promise.resolve().then(() => (init_workspace(), workspace_exports));
     const sessionId = `customer_${pendingPairingPhone2}`;
     const pairingMeta = {
       sessionId,
       telegramId: process.env.TELEGRAM_OWNER_ID?.trim() || (process.env.OMEGA_CUSTOMER_RUNTIME === "true" ? "customer" : "8831887192"),
-      sessionName: `Customer ${pendingPairingPhone2}`,
-      label: `Customer ${pendingPairingPhone2}`,
+      sessionName: pendingPairingLabel2,
+      label: pendingPairingLabel2,
       phone: pendingPairingPhone2,
       status: "PAIRING",
       pairMethod: "code",
@@ -49176,9 +49269,6 @@ async function bootstrap() {
       onConnected: async () => console.log("[PAIRING] successful; restart the bot to pair a new number")
     }).catch((error2) => console.error(`[PAIRING] failed: ${String(error2)}`));
   }
-  customerStartup.phase("PARENT SYNC", process.env.OMEGA_API_URL || process.env.OMEGA_CORE_URL ? "enrolling this deployment with the parent Core" : "Core URL not configured; local mode remains available");
-  await startPterodactylClientBridge();
-  if (process.env.OMEGA_API_URL || process.env.OMEGA_CORE_URL) customerStartup.success("parent sync started; local bot remains authoritative");
   const restoreMode = process.env.WA_RESTORE_SESSIONS ?? "true";
   if (restoreMode !== "false") {
     customerStartup.phase("WHATSAPP SESSIONS", "restoring saved sessions carefully so the panel stays responsive");
@@ -49258,6 +49348,7 @@ All systems operational. Use /start to begin.`,
 async function restoreSessions(options = {}) {
   const userIds = getAllUserIds();
   let restored = 0;
+  let pending = 0;
   let purged = 0;
   let restoreAttempt = 0;
   let cohort = 0;
@@ -49345,6 +49436,16 @@ async function restoreSessions(options = {}) {
           cohortSize: RESTORE_COHORT_SIZE
         });
         registerSessionOwner(sessionId, telegramId);
+        const connectingMeta = markConnecting(telegramId, sessionId, {
+          explicitRecovery: registeredAuth,
+          reason: "Startup restore handshake in progress"
+        });
+        if (!connectingMeta) {
+          logger.warn(`[Boot] Skipping ${sessionId}; lifecycle no longer permits startup restore.`);
+          pending++;
+          continue;
+        }
+        sessionMeta = connectingMeta;
         const authDir = sessionAuthDir(telegramId, sessionId);
         if (!fs39.existsSync(path35.join(authDir, "creds.json"))) {
           logger.warn(
@@ -49365,7 +49466,18 @@ async function restoreSessions(options = {}) {
             }
           }
         });
-        restored++;
+        const ready = await waitForSessionOperational(sessionId, Number.parseInt(process.env.WA_STARTUP_READY_TIMEOUT_MS ?? "45000", 10) || 45e3);
+        if (ready) {
+          restored++;
+          logger.info("[Boot] Session is operational after restore", { sessionId, telegramId });
+        } else {
+          pending++;
+          logger.warn("[Boot] Session restore started but did not reach operational OPEN before timeout", {
+            sessionId,
+            telegramId,
+            status: loadSessionMeta(telegramId, sessionId)?.status
+          });
+        }
         await paceAfterRestoreAttempt();
       } catch (err) {
         if (restoreAttempt > 0) await paceAfterRestoreAttempt();
@@ -49376,7 +49488,7 @@ async function restoreSessions(options = {}) {
       }
     }
   }
-  logger.info(`[Boot] Restoration complete: ${restored} active, ${purged} purged.`);
+  logger.info(`[Boot] Restoration complete: ${restored} ready, ${pending} pending recovery, ${purged} purged.`);
 }
 bootstrap().catch((err) => {
   logger.error("[Boot] Fatal error during startup", { err: String(err) });
