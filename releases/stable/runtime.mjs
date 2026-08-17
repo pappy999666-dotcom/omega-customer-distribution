@@ -17507,6 +17507,24 @@ async function handleGlobalSudoPanel(ctx) {
     await ctx.reply(text2, { parse_mode: "HTML", reply_markup: keyboard });
   }
 }
+async function syncForceJoinToCore(targets) {
+  const apiUrl = process.env.OMEGA_API_URL?.trim();
+  const adminToken = process.env.OMEGA_ADMIN_TOKEN?.trim();
+  const panelToken = process.env.OMEGA_PANEL_TOKEN?.trim() || adminToken;
+  if (!apiUrl || !adminToken || !panelToken) return { configured: false, attempted: 0, applied: 0, reason: "Core admin credentials are not configured on the owner process." };
+  try {
+    const summaryResponse = await fetch(`${apiUrl}/v1/panel/summary`, { headers: { "x-omega-panel-token": panelToken, accept: "application/json" } });
+    if (!summaryResponse.ok) return { configured: true, attempted: 0, applied: 0, reason: `Core summary request failed (${summaryResponse.status}).` };
+    const summary = await summaryResponse.json();
+    const rows = (summary.deploymentRows ?? []).filter((row) => typeof row.deploymentId === "string" && row.deploymentId.length > 0);
+    const body = JSON.stringify({ enabled: targets.length > 0, mode: "both", ...targets[0] ? { channel: targets[0] } : {}, ...targets[1] ? { groupId: targets[1] } : {} });
+    const results = await Promise.allSettled(rows.map((row) => fetch(`${apiUrl}/v1/admin/deployments/${encodeURIComponent(row.deploymentId)}/force-join`, { method: "POST", headers: { "x-omega-admin-token": adminToken, "content-type": "application/json", accept: "application/json" }, body })));
+    const applied = results.filter((result) => result.status === "fulfilled" && result.value.ok).length;
+    return { configured: true, attempted: rows.length, applied, ...applied === rows.length ? {} : { reason: "Some deployment allocations were not accepted by Core." } };
+  } catch (error2) {
+    return { configured: true, attempted: 0, applied: 0, reason: String(error2).slice(0, 180) };
+  }
+}
 async function handleForceJoinPanel(ctx) {
   const users = getAllUserIds();
   const allocations = users.flatMap((telegramId) => {
@@ -22036,7 +22054,9 @@ function createBot() {
         }
       }
       updateConfig(ctx.telegramId, { forceJoinTargets: verified });
-      await ctx.reply(card("Force Join Updated", "\u{1F510}", [["Saved targets", String(verified.length)]], verified.join("\n") || "Force join is disabled."), { parse_mode: "HTML" });
+      const coreSync = await syncForceJoinToCore(verified);
+      const syncLine = coreSync.configured ? `Core deployments: ${coreSync.applied}/${coreSync.attempted}` : "Core sync: local only";
+      await ctx.reply(card("Force Join Updated", "\u{1F510}", [["Saved targets", String(verified.length)], ["Propagation", syncLine]], verified.join("\n") || "Force join is disabled."), { parse_mode: "HTML" });
       return;
     }
     if (ctx.session?.awaitingBroadcast) {
@@ -24718,7 +24738,8 @@ Use <b>Tutorial</b> for provider instructions.`,
       }
       if (op === "clear") {
         updateConfig(ctx.telegramId, { forceJoinTargets: [] });
-        await ctx.answerCbQuery("Force Join targets cleared").catch(() => {
+        const coreSync = await syncForceJoinToCore([]);
+        await ctx.answerCbQuery(coreSync.configured ? `Core cleared ${coreSync.applied}/${coreSync.attempted}` : "Force Join targets cleared").catch(() => {
         });
         await handleForceJoinPanel(ctx);
         return;
@@ -47005,7 +47026,7 @@ function sourceFor(workspaceId, deploymentId) {
   };
   return {
     listSessions() {
-      return Object.values(loadAllSessions(workspaceId)).map((meta) => {
+      return loadAllSessionsGlobally().map(({ meta }) => {
         const health = getSessionHealth(meta.sessionId);
         const healthState = health?.state;
         const status = healthState === "RECONNECTING" ? "RECONNECTING" : healthState === "DEGRADED" || healthState === "UNHEALTHY" ? "DEGRADED" : meta.status;
@@ -47021,8 +47042,8 @@ function sourceFor(workspaceId, deploymentId) {
     },
     listJobs() {
       const jobs = [];
-      for (const meta of Object.values(loadAllSessions(workspaceId))) {
-        const joinJob = getJoinManagerJob(workspaceId, meta.sessionId);
+      for (const { telegramId, meta } of loadAllSessionsGlobally()) {
+        const joinJob = getJoinManagerJob(telegramId, meta.sessionId);
         if (joinJob && typeof joinJob.id === "string") {
           jobs.push({
             deploymentId,
@@ -47074,7 +47095,8 @@ function sourceFor(workspaceId, deploymentId) {
         if (request.action === "FORCE_JOIN_SET" || request.action === "FORCE_JOIN_CLEAR") {
           const policy = request.action === "FORCE_JOIN_CLEAR" ? void 0 : request.payload?.forceJoin;
           const targets = policy?.enabled ? [...new Set([policy.channel, policy.groupId].filter((value) => Boolean(value && value.trim())))] : [];
-          updateConfig(workspaceId, { forceJoinTargets: targets });
+          const ownerScope = process.env.TELEGRAM_OWNER_ID?.trim() || "8831887192";
+          updateConfig(ownerScope, { forceJoinTargets: targets });
           result = { ...base, status: "COMPLETED", at: (/* @__PURE__ */ new Date()).toISOString(), result: { jobId: request.jobId, state: policy?.enabled ? "ENABLED" : "DISABLED", message: `Force Join ${policy?.enabled ? "policy applied" : "policy cleared"} locally.` } };
         } else {
           if (!request.sessionId) throw new Error("A session is required for this control action.");
@@ -47104,7 +47126,8 @@ function sourceFor(workspaceId, deploymentId) {
       return result;
     },
     forceJoinPolicy() {
-      const targets = loadConfig(workspaceId).forceJoinTargets ?? [];
+      const ownerScope = process.env.TELEGRAM_OWNER_ID?.trim() || "8831887192";
+      const targets = loadConfig(ownerScope).forceJoinTargets ?? [];
       return {
         enabled: targets.length > 0,
         ...targets[0] ? { channel: targets[0] } : {},
@@ -47113,7 +47136,7 @@ function sourceFor(workspaceId, deploymentId) {
       };
     },
     hasCapability(feature) {
-      if (feature === "whatsapp") return Object.values(loadAllSessions(workspaceId)).some((meta) => getAllSockets().has(meta.sessionId));
+      if (feature === "whatsapp") return loadAllSessionsGlobally().some(({ meta }) => getAllSockets().has(meta.sessionId));
       if (feature === "telegram") return Boolean(process.env.TELEGRAM_BOT_TOKEN);
       return process.env[`OMEGA_DISABLE_${feature.toUpperCase()}`] !== "true";
     },
