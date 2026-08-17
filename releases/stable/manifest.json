@@ -1,0 +1,55 @@
+{
+  "version": "1.1.3",
+  "channel": "stable",
+  "generatedAt": "2026-08-17T00:00:00Z",
+  "files": [
+    {
+      "path": ".npmrc",
+      "sha256": "fb90faf96132d47d3688cb9ca9d0c52db9b89c2c75f0890ddc42aa40be869b19"
+    },
+    {
+      "path": "config.json",
+      "sha256": "eb98c3febab59dc419477c6ba19c94bfbbd15751b6c7ac4281c1b55ee079b6a3"
+    },
+    {
+      "path": "index.js",
+      "sha256": "a405eeebda19b8a3d53c8b6d521b4a8addf6ec042243f7766e7c627495c9045e"
+    },
+    {
+      "path": "package-lock.json",
+      "sha256": "216ad1200a2a1b41ae423f57cc0fa09b8b8c8d28947ba68e31f0aebe094b23da"
+    },
+    {
+      "path": "package.json",
+      "sha256": "e1e7665f71cac8f7952a42a223ef6886bbe33e1f7edae96762fe70bff4c96e0f"
+    },
+    {
+      "path": "public/app.js",
+      "sha256": "2a1028763fcffe2d2829104dd6f8c751d49dd27839ef22e96921ba328539b89e"
+    },
+    {
+      "path": "public/index.html",
+      "sha256": "b838b952d914495b53c28ec21627f4ac974e5b92b12c73867da47185af015ff6"
+    },
+    {
+      "path": "public/styles.css",
+      "sha256": "0539ceef2d3e78e3f0f620c1a4913c739496b89eefe085bc744824fb8438d109"
+    },
+    {
+      "path": "runtime.mjs",
+      "sha256": "6510c77feeeeb8cb19f28d22feb488970158ef447b34365667cce11f93dd2a0c"
+    },
+    {
+      "path": "vendor/omega-client/index.js",
+      "sha256": "f8148c18240e82002b865fc9e2c5be3f24cd78188a888fa29400e00f7f568961"
+    },
+    {
+      "path": "vendor/omega-client/library.js",
+      "sha256": "cb6b944b0f9f42db2b212021cc9c2e59f8c61d8c03e3d0b8e1faf99b488bf671"
+    },
+    {
+      "path": "vendor/omega-client/package.json",
+      "sha256": "33a53923f85948e8d105218392bb73a5b0e2d5b3e3fd59881e681aa0c931242b"
+    }
+  ]
+}

@@ -1,0 +1,11 @@
+{
+    "database": {
+        "type": "MongoDB"
+    },
+    "useRedis": true,
+    "whatsapp": {
+        "pairingMode": "QR",
+        "sessionFolder": "./sessions"
+    },
+    "enableWebDashboard": false
+}
