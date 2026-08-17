@@ -1,7 +1,7 @@
 {
-  "version": "1.1.3",
+  "version": "1.1.4",
   "channel": "stable",
-  "generatedAt": "2026-08-17T00:00:00Z",
+  "generatedAt": "2026-08-17T03:44:13.347536+00:00",
   "files": [
     {
       "path": ".npmrc",
@@ -37,7 +37,7 @@
     },
     {
       "path": "runtime.mjs",
-      "sha256": "6510c77feeeeb8cb19f28d22feb488970158ef447b34365667cce11f93dd2a0c"
+      "sha256": "d62e601e5f006acdd8b37d99fb883f0e5ebce5c2e1b2a4b415ec8c7871fc577c"
     },
     {
       "path": "vendor/omega-client/index.js",

@@ -3263,7 +3263,7 @@ var init_transport_metrics = __esm({
 // src/whatsapp/utils/native-rich.ts
 function nativeTableContent(table) {
   const content = {
-    table: table.rows.map((row2) => row2.map(
+    table: table.rows.map((row) => row.map(
       (cell) => typeof cell === "string" ? normalizeWhatsAppText(cell) : cell
     )),
     noDonation: true,
@@ -13626,12 +13626,12 @@ function renderPublicCommandCatalogHtmlChunks(maxLength = 3600) {
       const command = record.platform === "telegram" ? `/${record.command}` : `.${record.command}`;
       const syntax = record.platform === "telegram" ? `/${record.entry.syntax}` : record.entry.syntax;
       const aliases = record.entry.aliases?.length ? ` \xB7 aliases: ${record.entry.aliases.map((alias) => `.${alias}`).join(", ")}` : "";
-      const row2 = `<tr><td><code>${escape(command)}</code></td><td><code>${escape(syntax)}</code>${escape(aliases)}</td><td>${escape(record.entry.desc)}</td><td>${escape(record.platform)}</td></tr>`;
-      if (current.length + row2.length + suffix.length > maxLength && current !== prefix) {
+      const row = `<tr><td><code>${escape(command)}</code></td><td><code>${escape(syntax)}</code>${escape(aliases)}</td><td>${escape(record.entry.desc)}</td><td>${escape(record.platform)}</td></tr>`;
+      if (current.length + row.length + suffix.length > maxLength && current !== prefix) {
         chunks.push(`${current}${suffix}`);
         current = prefix;
       }
-      current += row2;
+      current += row;
     }
     if (current !== prefix) chunks.push(`${current}${suffix}`);
   }
@@ -16302,7 +16302,7 @@ function htmlEscape(value) {
 }
 function richTableHtml(table) {
   const header3 = table.columns.map((column) => `<th>${htmlEscape(column)}</th>`).join("");
-  const body = table.rows.map((row2) => `<tr>${table.columns.map((_, index) => `<td>${htmlEscape(row2[index] ?? "\u2014")}</td>`).join("")}</tr>`).join("");
+  const body = table.rows.map((row) => `<tr>${table.columns.map((_, index) => `<td>${htmlEscape(row[index] ?? "\u2014")}</td>`).join("")}</tr>`).join("");
   return `${table.title ? `<h2>${htmlEscape(table.title)}</h2>` : ""}<table><thead><tr>${header3}</tr></thead><tbody>${body}</tbody></table>`;
 }
 function richTablesHtml(tables, intro = "") {
@@ -25053,9 +25053,9 @@ function buildSvg(data) {
   const navCards = data.navigation.slice(0, 6);
   const navMarkup = navCards.map((item, index) => {
     const column = index % 2;
-    const row2 = Math.floor(index / 2);
+    const row = Math.floor(index / 2);
     const x = 72 + column * 474;
-    const y = 760 + row2 * 212;
+    const y = 760 + row * 212;
     const count = item.count === void 0 ? "READY" : `[${item.count}]`;
     return [
       card2(x, y, 438, 174, index % 2 === 0 ? "#14dfff" : "#4b7dff"),
@@ -31765,9 +31765,9 @@ function addListText(texts, list) {
     addText(texts, sectionRecord["title"]);
     const rows = sectionRecord["rows"];
     if (!Array.isArray(rows)) continue;
-    for (const row2 of rows) {
-      if (!row2 || typeof row2 !== "object") continue;
-      const rowRecord = row2;
+    for (const row of rows) {
+      if (!row || typeof row !== "object") continue;
+      const rowRecord = row;
       addText(texts, rowRecord["title"]);
       addText(texts, rowRecord["description"]);
     }
@@ -33989,10 +33989,10 @@ function escapeSvg(value) {
 function renderTttCanvasSvg(session2, footer) {
   const cells = session2.board.map((value, index) => {
     if (!value) return "";
-    const row2 = Math.floor(index / 3);
+    const row = Math.floor(index / 3);
     const col = index % 3;
     const x = 170 + col * 240;
-    const y = 420 + row2 * 240;
+    const y = 420 + row * 240;
     const color = value === "\u274C" ? "#ff4f7b" : "#4de7ff";
     const glyph = value === "\u274C" ? "\xD7" : "\u25CB";
     return `<text x="${x}" y="${y + 68}" text-anchor="middle" font-family="Arial, sans-serif" font-size="150" font-weight="800" fill="${color}" stroke="${color}" stroke-width="2">${glyph}</text>`;
@@ -43579,11 +43579,16 @@ var init_HealthReporter = __esm({
       static display(results) {
         const mem = process.memoryUsage();
         const uptime = process.uptime();
-        console.log("\n\x1B[36m\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501");
-        console.log("            SYSTEM HEALTH REPORT");
-        console.log("\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\x1B[0m");
-        console.log(`\x1B[90mUptime: ${Math.floor(uptime / 60)}m ${Math.floor(uptime % 60)}s | RSS: ${Math.round(mem.rss / 1024 / 1024)}MB | Heap: ${Math.round(mem.heapUsed / 1024 / 1024)}MB\x1B[0m
+        const customerConsole = process.env.OMEGA_CUSTOMER_RUNTIME === "true" || process.env.OMEGA_PLATFORM === "pterodactyl";
+        if (customerConsole) {
+          console.log(`OMEGA STATUS \xB7 ${Math.floor(uptime / 60)}m ${Math.floor(uptime % 60)}s \xB7 RSS ${Math.round(mem.rss / 1024 / 1024)}MB`);
+        } else {
+          console.log("\n\x1B[36m\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501");
+          console.log("            SYSTEM HEALTH REPORT");
+          console.log("\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\x1B[0m");
+          console.log(`\x1B[90mUptime: ${Math.floor(uptime / 60)}m ${Math.floor(uptime % 60)}s | RSS: ${Math.round(mem.rss / 1024 / 1024)}MB | Heap: ${Math.round(mem.heapUsed / 1024 / 1024)}MB\x1B[0m
 `);
+        }
         let hasError = false;
         for (const res of results) {
           let icon = "";
@@ -43604,12 +43609,12 @@ var init_HealthReporter = __esm({
               break;
           }
           const msg = res.message ? ` - ${res.message}` : "";
-          console.log(`${color}${icon} ${res.component.padEnd(20)}${msg}\x1B[0m`);
+          console.log(customerConsole ? `${color}${icon} ${res.component}${msg}\x1B[0m` : `${color}${icon} ${res.component.padEnd(20)}${msg}\x1B[0m`);
           if (res.status !== "ok") {
             logger.log(res.status === "error" ? "error" : "warn", `[Health] ${res.component}: ${res.message || "Check failed"}`);
           }
         }
-        console.log("\x1B[36m\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\x1B[0m\n");
+        if (!customerConsole) console.log("\x1B[36m\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\x1B[0m\n");
         if (hasError) {
           logger.error("[Health] System startup blocked by critical failures");
           return false;
@@ -47159,31 +47164,21 @@ var ANSI = {
 function mark(ok, label) {
   return `${ok ? ANSI.green + "\u25CF" : ANSI.yellow + "\u25CB"}${ANSI.reset} ${label}`;
 }
-function row(content) {
-  return `${ANSI.cyan}\u2551${ANSI.reset} ${content.padEnd(62)}${ANSI.cyan}\u2551${ANSI.reset}`;
-}
 function printInstallMatrix(state) {
   const role = state.runtimeRole ?? "customer";
   const operator = role === "operator";
-  const title2 = operator ? "OMEGA // OPERATOR NODE" : "OMEGA // CUSTOMER NODE";
-  const subtitle = operator ? "main control runtime" : "protected workload runtime";
-  const adminLabel = operator ? "Central admin and operator surface enabled" : "Operator panel and admin surface disabled";
-  const storageLabel = state.hostedStorageConfigured ? `${state.storageMode} \xB7 scoped Core lease ready` : `${state.storageMode} \xB7 local or pending hosted lease`;
+  const title2 = operator ? "OMEGA OPERATOR" : "OMEGA CUSTOMER";
+  const storageLabel = state.hostedStorageConfigured ? `${state.storageMode} \xB7 Core lease ready` : `${state.storageMode} \xB7 local/degraded`;
   const lines = [
-    `${ANSI.magenta}\u2554\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2557${ANSI.reset}`,
-    `${ANSI.magenta}\u2551${ANSI.reset} ${ANSI.white}${title2}${ANSI.reset} ${ANSI.dim}${subtitle}${ANSI.reset}${" ".repeat(Math.max(1, 42 - title2.length - subtitle.length))}${ANSI.magenta}\u2551${ANSI.reset}`,
-    `${ANSI.magenta}\u2560\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2563${ANSI.reset}`,
-    row(`${ANSI.blue}BOOT${ANSI.reset}    ${mark(true, "Protected runtime loaded")}`),
-    row(`${ANSI.blue}DEPS${ANSI.reset}    ${mark(true, "Locked production dependencies ready")}`),
-    row(`${ANSI.blue}LOCAL${ANSI.reset}   ${mark(true, operator ? "Operator workspace and workloads ready" : "Customer-local workspace and workloads isolated")}`),
-    row(`${ANSI.blue}ADMIN${ANSI.reset}   ${mark(Boolean(state.adminSurfaceEnabled ?? operator), adminLabel)}`),
-    row(`${ANSI.blue}TELEGRAM${ANSI.reset} ${mark(state.telegramConfigured, state.telegramConfigured ? "Control channel configured" : "Optional control channel pending")}`),
-    row(`${ANSI.blue}WHATSAPP${ANSI.reset} ${mark(state.whatsappConfigured, state.whatsappConfigured ? "Session detected or pairing scheduled" : "Pairing required or skipped")}`),
-    row(`${ANSI.blue}CORE${ANSI.reset}    ${mark(state.coreConfigured, state.coreConfigured ? "Parent control and release sync configured" : "Parent sync optional \u2014 local mode")}`),
-    row(`${ANSI.blue}STORE${ANSI.reset}   ${ANSI.white}${storageLabel.padEnd(54)}${ANSI.reset}`),
-    ...state.tunnelEnabled !== void 0 ? [row(`${ANSI.blue}TUNNEL${ANSI.reset}  ${mark(Boolean(state.tunnelReady), state.tunnelReady ? "Secure storage tunnel ready" : "Tunnel unavailable \u2014 local mode only")}`)] : [],
-    `${ANSI.magenta}\u255A\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u255D${ANSI.reset}`,
-    `${ANSI.dim}UPLOAD  \u2192  EXTRACT  \u2192  START  \xB7  no panel token  \xB7  secrets stay out of logs${ANSI.reset}`
+    `${ANSI.cyan}${title2}${ANSI.reset} ${ANSI.dim}\xB7 protected runtime${ANSI.reset}`,
+    `${mark(true, "Runtime ready")}  ${mark(true, operator ? "Operator mode" : "Customer mode")}`,
+    `${mark(state.telegramConfigured, state.telegramConfigured ? "Telegram ready" : "Telegram optional")}`,
+    `${mark(state.whatsappConfigured, state.whatsappConfigured ? "WhatsApp ready" : "WhatsApp pairing pending")}`,
+    `${mark(state.coreConfigured, state.coreConfigured ? "Release sync ready" : "Local mode")}`,
+    `${mark(Boolean(state.adminSurfaceEnabled ?? operator), operator ? "Admin surface enabled" : "Admin surface protected")}`,
+    `${ANSI.dim}Storage: ${storageLabel}${ANSI.reset}`,
+    ...state.tunnelEnabled !== void 0 ? [`${mark(Boolean(state.tunnelReady), state.tunnelReady ? "Secure tunnel ready" : "Tunnel unavailable \xB7 bot continues")}`] : [],
+    `${ANSI.dim}Upload \u2192 extract \u2192 start \xB7 routine logs stay on disk${ANSI.reset}`
   ];
   console.log(lines.join("\n"));
 }
