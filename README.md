@@ -1,4 +1,4 @@
-# Omega Customer Bot 1.2.5
+# Omega Customer Bot 1.2.6
 
 This repository publishes the source-protected Omega customer runtime. Customers deploy with one file: the root `index.js` bootstrap. It downloads the verified stable runtime, installs production dependencies, preserves the previous working release when an update fails, and starts the local bot.
 
@@ -16,9 +16,11 @@ Start the server and wait for the live setup display. The bootstrap downloads th
 
 The setup asks for a Telegram token first. To create one, open Telegram, search for **@BotFather**, send `/newbot`, follow the instructions, and paste the resulting token into the panel console. Type `skip` if Telegram control is not required.
 
+If Telegram is enabled, the setup asks for your owner chat ID. Open the parent Omega bot and send `/getid` (or `/id`), then paste the numeric **Your user ID** value into the panel console. This makes you the owner of this customer deployment only; it does not transfer the parent admin panel or operator identity.
+
 The setup then asks for a WhatsApp number. Enter the full number with country code and no spaces, for example `2348012345678`. Pairing has a one-minute countdown. A successful session is preserved across restarts. Failed, expired, revoked, or abandoned pairing attempts are removed immediately, so stale Pair or Resume buttons are not retained.
 
-On later restarts, completed Telegram setup and existing WhatsApp sessions are reused. Only missing configuration is requested.
+On later restarts, completed Telegram setup, owner identity, and existing WhatsApp sessions are reused. Only missing configuration is requested. The customer owner can use the Telegram **Restart Customer Bot** button or `/restart`; the panel process manager will bring the bot back with saved sessions and settings.
 
 ## Optional Redis
 
@@ -62,11 +64,19 @@ node index.js
 
 A process manager such as PM2 may be used to keep the process online. Keep the terminal environment private and allow outbound HTTPS access so the bootstrap can check the stable release channel after restarts.
 
+## Parent synchronization
+
+When the operator Core is configured, the customer deployment enrolls with an authenticated installation token. Parent Force Join policies are checked through the parent bot even when the customer uses a separate Telegram bot token. Parent broadcasts are delivered to the owner of each active customer deployment, and customer ideas submitted through **Send Idea** are synchronized into the parent admin inbox. A temporary Core outage does not expose credentials; local ordinary commands remain the customer runtime’s responsibility.
+
 ## Automatic updates
 
 The uploaded `index.js` is the bootstrap key. With automatic updates enabled, restarting the server checks the stable GitHub manifest, verifies SHA-256 hashes, stages the new runtime safely, and keeps the previous working release if an update fails. Customers do not need to download another file for future stable updates. Keep the original bootstrap `index.js`; restart the server and it will fetch, verify, install, and activate the newest runtime automatically.
 
 For resource recommendations and troubleshooting, use the accompanying `CUSTOMER_QUICKSTART.md` guide supplied by the operator.
+
+## Useful Telegram controls
+
+The parent operator can use `/getid` to provide an owner ID and `/broadcast <message>` to send a controlled message to active customer owners. Customer owners can use `/restart` or the main-menu restart button. Public release notices may include operator-configured URL buttons; those buttons are public links only and are not admin controls.
 
 ## Security boundary
 
