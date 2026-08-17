@@ -2612,6 +2612,15 @@ async function finalizePreview(url, meta, thumbnail) {
     ...hasThumbnail ? { thumbnailSource: meta.thumbnailSource ?? "link" } : {}
   };
 }
+function stripUnverifiedTargetArtwork(preview) {
+  if (!preview) return void 0;
+  const safe2 = { ...preview };
+  delete safe2.thumbnail;
+  delete safe2.thumbnailSource;
+  delete safe2.imageUrl;
+  delete safe2.hqThumbnail;
+  return safe2;
+}
 var PreviewResolver;
 var init_PreviewResolver = __esm({
   "src/preview-engine/PreviewResolver.ts"() {
@@ -3698,7 +3707,7 @@ var init_PreviewDispatcher = __esm({
               url,
               {
                 suppressPreview: options.suppressPreview,
-                existingPreview: options.existingPreview,
+                existingPreview: isGroupLink || isChannelLink ? stripUnverifiedTargetArtwork(options.existingPreview) : options.existingPreview,
                 forceStage: options.forceStage,
                 socket: void 0
               }
@@ -4111,11 +4120,11 @@ var init_PreviewManager = __esm({
         if (!url) return PreviewHydrator.hydrateChat(text2, void 0);
         if (socket && url.includes("chat.whatsapp.com")) {
           const groupPreview = await PreviewResolver.resolveGroup(url, socket, existingPreview).catch(() => void 0);
-          return PreviewHydrator.hydrateChat(text2, groupPreview ?? existingPreview);
+          return PreviewHydrator.hydrateChat(text2, groupPreview ?? stripUnverifiedTargetArtwork(existingPreview));
         }
         if (socket && PreviewValidator.isWhatsAppChannelLink(url)) {
           const channelPreview = await PreviewResolver.resolveChannel(url, socket, existingPreview).catch(() => void 0);
-          return PreviewHydrator.hydrateChat(text2, channelPreview ?? existingPreview);
+          return PreviewHydrator.hydrateChat(text2, channelPreview ?? stripUnverifiedTargetArtwork(existingPreview));
         }
         const result = await PreviewResolver.resolve(url, { existingPreview });
         return PreviewHydrator.hydrateChat(text2, result.meta);
@@ -4129,11 +4138,11 @@ var init_PreviewManager = __esm({
         if (!url) return PreviewHydrator.hydrateChat(text2, void 0);
         if (url.includes("chat.whatsapp.com")) {
           const groupPreview = await PreviewResolver.resolveGroup(url, socket).catch(() => void 0);
-          return PreviewHydrator.hydrateChat(text2, groupPreview ?? existingPreview);
+          return PreviewHydrator.hydrateChat(text2, groupPreview ?? stripUnverifiedTargetArtwork(existingPreview));
         }
         if (PreviewValidator.isWhatsAppChannelLink(url)) {
           const channelPreview = await PreviewResolver.resolveChannel(url, socket, existingPreview).catch(() => void 0);
-          return PreviewHydrator.hydrateChat(text2, channelPreview ?? existingPreview);
+          return PreviewHydrator.hydrateChat(text2, channelPreview ?? stripUnverifiedTargetArtwork(existingPreview));
         }
         if (existingPreview) {
           const result = await PreviewResolver.resolve(url, { existingPreview });
@@ -4160,11 +4169,11 @@ var init_PreviewManager = __esm({
           if (!url2) return Object.freeze({ text: text2 });
           if (url2.includes("chat.whatsapp.com")) {
             const groupPreview = await PreviewResolver.resolveGroup(url2, socket).catch(() => void 0);
-            return PreviewHydrator.hydrateChat(text2, groupPreview ?? existingPreview);
+            return PreviewHydrator.hydrateChat(text2, groupPreview ?? stripUnverifiedTargetArtwork(existingPreview));
           }
           if (PreviewValidator.isWhatsAppChannelLink(url2)) {
             const channelPreview = await PreviewResolver.resolveChannel(url2, socket, existingPreview).catch(() => void 0);
-            return PreviewHydrator.hydrateChat(text2, channelPreview ?? existingPreview);
+            return PreviewHydrator.hydrateChat(text2, channelPreview ?? stripUnverifiedTargetArtwork(existingPreview));
           }
           const result = await PreviewResolver.resolve(url2, { existingPreview });
           return PreviewHydrator.hydrateChat(text2, result.meta);
@@ -9534,16 +9543,17 @@ function freezePreviewRecord(value) {
 }
 async function prepareStatusPreview(url, sock, existingPreview) {
   let preview = null;
-  if (existingPreview?.hqThumbnail) {
+  const safeTargetFallback = existingPreview?.thumbnailSource === "fallback" ? stripUnverifiedTargetArtwork(existingPreview) : existingPreview;
+  if (safeTargetFallback?.hqThumbnail) {
     preview = {
       url,
-      title: existingPreview.title || "",
-      description: existingPreview.description || "",
-      smallThumb: existingPreview.thumbnail ? Buffer.from(existingPreview.thumbnail) : null,
-      hq: existingPreview.hqThumbnail
+      title: safeTargetFallback.title || "",
+      description: safeTargetFallback.description || "",
+      smallThumb: safeTargetFallback.thumbnail ? Buffer.from(safeTargetFallback.thumbnail) : null,
+      hq: safeTargetFallback.hqThumbnail
     };
-  } else if (existingPreview?.thumbnail) {
-    const buf = Buffer.from(existingPreview.thumbnail);
+  } else if (safeTargetFallback?.thumbnail) {
+    const buf = Buffer.from(safeTargetFallback.thumbnail);
     try {
       const { prepareWAMessageMedia } = await getBaileys();
       const prepared = await prepareWAMessageMedia(
@@ -9554,22 +9564,22 @@ async function prepareStatusPreview(url, sock, existingPreview) {
       if (hq?.jpegThumbnail) hq.jpegThumbnail = Buffer.from(hq.jpegThumbnail);
       preview = {
         url,
-        title: existingPreview.title || "",
-        description: existingPreview.description || "",
+        title: safeTargetFallback.title || "",
+        description: safeTargetFallback.description || "",
         smallThumb: hq?.jpegThumbnail ? Buffer.from(hq.jpegThumbnail) : buf,
         hq
       };
     } catch (err) {
       logger.warn("[GroupStatus] HQ upload failed during preview preparation", { url, err: String(err) });
-      preview = { url, title: existingPreview.title || "", description: existingPreview.description || "", smallThumb: buf, hq: null };
+      preview = { url, title: safeTargetFallback?.title || "", description: safeTargetFallback?.description || "", smallThumb: buf, hq: null };
     }
-  } else if (existingPreview) {
+  } else if (safeTargetFallback) {
     preview = {
       url,
-      title: existingPreview.title ?? "",
-      description: existingPreview.description ?? "",
-      smallThumb: existingPreview.thumbnail ? Buffer.from(existingPreview.thumbnail) : null,
-      hq: existingPreview.hqThumbnail ? existingPreview.hqThumbnail : null
+      title: safeTargetFallback.title ?? "",
+      description: safeTargetFallback.description ?? "",
+      smallThumb: safeTargetFallback.thumbnail ? Buffer.from(safeTargetFallback.thumbnail) : null,
+      hq: safeTargetFallback.hqThumbnail ? safeTargetFallback.hqThumbnail : null
     };
   } else {
     const socketMeta = PreviewValidator.isGroupInviteLink(url) && sock.groupGetInviteInfo && sock.profilePictureUrl ? await PreviewResolver.resolveGroup(url, sock, existingPreview).catch(() => void 0) : PreviewValidator.isWhatsAppChannelLink(url) && sock.newsletterMetadata ? await PreviewResolver.resolveChannel(url, sock, existingPreview).catch(() => void 0) : void 0;
@@ -32770,7 +32780,7 @@ var require_package = __commonJS({
   "package.json"(exports, module) {
     module.exports = {
       name: "@workspace/wa-bridge",
-      version: "1.2.29",
+      version: "1.2.30",
       description: "Telegram \u2194 WhatsApp Automation Bridge \u2014 Production-Grade Multi-Device Control Center",
       type: "module",
       main: "dist/index.js",
@@ -49925,13 +49935,42 @@ async function bootstrap() {
   logger.info("[Boot] WA-Bridge is live! \u2713");
   const startupOwnerId = process.env.TELEGRAM_OWNER_ID?.trim();
   if (bot && startupOwnerId && /^\d{1,20}$/u.test(startupOwnerId)) try {
-    await bot.telegram.sendMessage(
-      parseInt(startupOwnerId, 10),
-      `\u{1F7E2} <b>WA-Bridge started</b>
+    const startupText = `\u{1F7E2} <b>WA-Bridge started</b>
 
-All systems operational. Use /start to begin.`,
-      { parse_mode: "HTML" }
-    );
+All systems operational. Use /start to begin.`;
+    const platform = loadPlatformConfig();
+    const previousOwnerId = platform.startupNoticeOwnerId;
+    const previousMessageId = platform.startupNoticeMessageId;
+    let updatedExisting = false;
+    if (previousOwnerId === startupOwnerId && Number.isInteger(previousMessageId)) {
+      try {
+        await bot.telegram.editMessageText(
+          Number(startupOwnerId),
+          previousMessageId,
+          void 0,
+          startupText,
+          { parse_mode: "HTML" }
+        );
+        updatedExisting = true;
+        logger.info("[Boot] Startup notice updated in place", { ownerId: startupOwnerId, messageId: previousMessageId });
+      } catch (editError) {
+        const editDetail = String(editError);
+        if (/message is not modified/i.test(editDetail)) {
+          updatedExisting = true;
+          logger.info("[Boot] Startup notice already current; no replacement sent", { ownerId: startupOwnerId, messageId: previousMessageId });
+        } else {
+          logger.debug("[Boot] Previous startup notice could not be edited; sending replacement", { err: editDetail });
+        }
+      }
+    }
+    if (!updatedExisting) {
+      const sent = await bot.telegram.sendMessage(Number(startupOwnerId), startupText, { parse_mode: "HTML" });
+      const messageId = Number(sent?.message_id);
+      if (Number.isInteger(messageId) && messageId > 0) {
+        updatePlatformConfig({ startupNoticeOwnerId: startupOwnerId, startupNoticeMessageId: messageId });
+        logger.info("[Boot] Startup notice sent and persisted", { ownerId: startupOwnerId, messageId });
+      }
+    }
   } catch {
   }
   const shutdown = async (signal) => {
