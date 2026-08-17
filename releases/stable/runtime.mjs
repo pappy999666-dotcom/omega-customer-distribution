@@ -16698,6 +16698,37 @@ async function readJson(filePath) {
     return null;
   }
 }
+async function claimPendingRelease() {
+  await fsp3.mkdir(RELEASE_DIR, { recursive: true });
+  try {
+    const stat = await fsp3.stat(CLAIM_PATH);
+    if (Date.now() - stat.mtimeMs > CLAIM_STALE_MS) {
+      await fsp3.rename(CLAIM_PATH, PENDING_PATH).catch(() => {
+      });
+    }
+  } catch {
+  }
+  try {
+    await fsp3.rename(PENDING_PATH, CLAIM_PATH);
+  } catch {
+    return null;
+  }
+  return readJson(CLAIM_PATH);
+}
+async function releaseClaim2(pending, retry) {
+  if (retry) {
+    try {
+      await fsp3.access(PENDING_PATH);
+      await fsp3.rm(CLAIM_PATH, { force: true });
+      return;
+    } catch {
+    }
+    await writeJsonAtomic(PENDING_PATH, pending).catch(() => {
+    });
+  }
+  await fsp3.rm(CLAIM_PATH, { force: true }).catch(() => {
+  });
+}
 async function stageReleaseNotification(prevCommit, currCommit, options = {}) {
   const notes = await generateReleaseNotes(prevCommit, currCommit);
   const chunks = [
@@ -16713,16 +16744,22 @@ async function stageReleaseNotification(prevCommit, currCommit, options = {}) {
   });
 }
 async function postPendingReleaseNotification(telegram, channelUsername) {
-  const pending = await readJson(PENDING_PATH);
-  if (!pending || !pending.currCommit || !Array.isArray(pending.chunks)) return { posted: false, chunks: 0, reason: "none-pending" };
+  const pending = await claimPendingRelease();
+  if (!pending || !pending.currCommit || !Array.isArray(pending.chunks)) {
+    await fsp3.rm(CLAIM_PATH, { force: true }).catch(() => {
+    });
+    return { posted: false, chunks: 0, reason: "none-pending" };
+  }
   const last = await readJson(LAST_PATH);
   if (last?.currCommit === pending.currCommit) {
-    await fsp3.rm(PENDING_PATH, { force: true }).catch(() => {
-    });
+    await releaseClaim2(pending, false);
     return { posted: false, chunks: pending.chunks.length, reason: "already-posted" };
   }
   const channel = channelUsername?.trim();
-  if (!channel) return { posted: false, chunks: 0, reason: "channel-not-configured" };
+  if (!channel) {
+    await releaseClaim2(pending, true);
+    return { posted: false, chunks: 0, reason: "channel-not-configured" };
+  }
   let sent = Math.max(0, Math.min(pending.sent || 0, pending.chunks.length));
   try {
     while (sent < pending.chunks.length) {
@@ -16730,18 +16767,17 @@ async function postPendingReleaseNotification(telegram, channelUsername) {
       const richChunk = fallbackChunk.includes("<table>") ? fallbackChunk : fallbackChunk.replace(/\r?\n/g, "<br/>");
       await sendTelegramRichMessage(telegram, channel, richChunk, fallbackChunk);
       sent += 1;
-      await writeJsonAtomic(PENDING_PATH, { ...pending, sent });
+      await writeJsonAtomic(CLAIM_PATH, { ...pending, sent });
     }
     await writeJsonAtomic(LAST_PATH, { currCommit: pending.currCommit, postedAt: Date.now(), chunks: sent });
-    await fsp3.rm(PENDING_PATH, { force: true });
+    await releaseClaim2(pending, false);
     return { posted: true, chunks: sent };
   } catch (error2) {
-    await writeJsonAtomic(PENDING_PATH, { ...pending, sent }).catch(() => {
-    });
+    await releaseClaim2({ ...pending, sent }, true);
     return { posted: false, chunks: sent, reason: String(error2).slice(0, 180) };
   }
 }
-var RELEASE_DIR, PENDING_PATH, LAST_PATH, MAX_MESSAGE_LENGTH;
+var RELEASE_DIR, PENDING_PATH, LAST_PATH, CLAIM_PATH, CLAIM_STALE_MS, MAX_MESSAGE_LENGTH;
 var init_release_publisher = __esm({
   "src/services/release-publisher.ts"() {
     "use strict";
@@ -16752,6 +16788,8 @@ var init_release_publisher = __esm({
     RELEASE_DIR = path10.join(WORKSPACE_ROOT, "_platform");
     PENDING_PATH = path10.join(RELEASE_DIR, "release-pending.json");
     LAST_PATH = path10.join(RELEASE_DIR, "release-last.json");
+    CLAIM_PATH = path10.join(RELEASE_DIR, "release-sending.json");
+    CLAIM_STALE_MS = 15 * 6e4;
     MAX_MESSAGE_LENGTH = 3800;
   }
 });
@@ -30931,7 +30969,7 @@ var require_package = __commonJS({
   "package.json"(exports, module) {
     module.exports = {
       name: "@workspace/wa-bridge",
-      version: "1.2.4",
+      version: "1.2.5",
       description: "Telegram \u2194 WhatsApp Automation Bridge \u2014 Production-Grade Multi-Device Control Center",
       type: "module",
       main: "dist/index.js",
