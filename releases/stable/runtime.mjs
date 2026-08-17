@@ -28968,6 +28968,28 @@ var init_DownloadManager = __esm({
         if (trimmed.startsWith("{")) return JSON.parse(trimmed);
         return stdout2;
       }
+      /**
+       * A stale provider cookie jar must not make every public YouTube item fail.
+       * If yt-dlp reports a cookie/bot-check error, make one bounded retry without
+       * cookies. No credentials are removed from disk and private/login-required
+       * media still returns its real failure after the retry.
+       */
+      async runYtDlpWithCookieFallback(url, flags, fallback) {
+        try {
+          return await this.runYtDlp(url, flags);
+        } catch (error2) {
+          const mapped = error2 instanceof MediaDownloadError ? error2 : this.mapYtDlpError(error2, fallback);
+          if (!this.cookiesFile || !["cookie-invalid", "bot-check"].includes(mapped.code)) throw mapped;
+          const retryFlags = { ...flags };
+          delete retryFlags.cookies;
+          logger.warn("[Media] yt-dlp cookie fallback \u2014 retrying without cookies", { fallback, code: mapped.code });
+          try {
+            return await this.runYtDlp(url, retryFlags);
+          } catch (retryError) {
+            throw this.mapYtDlpError(retryError, fallback);
+          }
+        }
+      }
       // ── yt-dlp availability ──────────────────────────────────
       async ytDlpOk() {
         if (this.ytDlpAvailable !== null) return this.ytDlpAvailable;
@@ -28993,13 +29015,13 @@ var init_DownloadManager = __esm({
         }
         const capped = Math.min(Math.max(limit, 1), 10);
         const info2 = await this.withTimeout(
-          this.enqueueWork(() => this.runYtDlp(`ytsearch${capped}:${q}`, {
+          this.enqueueWork(() => this.runYtDlpWithCookieFallback(`ytsearch${capped}:${q}`, {
             dumpSingleJson: true,
             flatPlaylist: true,
             noWarnings: true,
             quiet: true,
             ...this.cookiesFile ? { cookies: this.cookiesFile } : {}
-          }), "Search"),
+          }, "Search"), "Search"),
           YTDLP_TIMEOUT_MS,
           "Search timed out."
         );
@@ -29055,13 +29077,13 @@ var init_DownloadManager = __esm({
         }
         try {
           const info2 = await this.withRetry("resolve", () => this.withTimeout(
-            this.enqueueWork(() => this.runYtDlp(url, {
+            this.enqueueWork(() => this.runYtDlpWithCookieFallback(url, {
               dumpSingleJson: true,
               noWarnings: true,
               quiet: true,
               flatPlaylist: true,
               ...this.cookiesFile ? { cookies: this.cookiesFile } : {}
-            }), "Resolution"),
+            }, "Resolution"), "Resolution"),
             YTDLP_TIMEOUT_MS,
             "Resolution timed out."
           ), { attempts: 2, fallback: "Unable to resolve that media." });
@@ -29115,13 +29137,13 @@ var init_DownloadManager = __esm({
             throw new MediaDownloadError("Download engine (yt-dlp) is unavailable on this server.", "unsupported");
           }
           const info2 = await this.withRetry("download resolve", () => this.withTimeout(
-            this.runYtDlp(url, {
+            this.runYtDlpWithCookieFallback(url, {
               dumpSingleJson: true,
               noWarnings: true,
               quiet: true,
               flatPlaylist: true,
               ...this.cookiesFile ? { cookies: this.cookiesFile } : {}
-            }),
+            }, "Resolution"),
             YTDLP_TIMEOUT_MS,
             "Resolution timed out."
           ), { attempts: 2, fallback: "Unable to resolve that media." });
@@ -29263,7 +29285,7 @@ var init_DownloadManager = __esm({
             outPath = path23.join(this.tempDir, `${token2}-${attemptNo}.${ext}`);
             attemptPaths.push(outPath);
             return this.withTimeout(
-              this.enqueueWork(() => this.runYtDlp(url, { ...finalArgs, output: outPath }), "Download"),
+              this.enqueueWork(() => this.runYtDlpWithCookieFallback(url, { ...finalArgs, output: outPath }, "Download"), "Download"),
               YTDLP_TIMEOUT_MS,
               "Download timed out."
             );
@@ -29277,7 +29299,7 @@ var init_DownloadManager = __esm({
               attemptPaths.push(assistedPath);
               try {
                 await this.withTimeout(
-                  this.enqueueWork(() => this.runYtDlp(url, { ...finalArgs, addHeader: `x-captcha-token: ${solvedToken}`, output: assistedPath }), "Captcha-assisted download"),
+                  this.enqueueWork(() => this.runYtDlpWithCookieFallback(url, { ...finalArgs, addHeader: `x-captcha-token: ${solvedToken}`, output: assistedPath }, "Captcha-assisted download"), "Captcha-assisted download"),
                   YTDLP_TIMEOUT_MS,
                   "Download timed out."
                 );
@@ -32600,7 +32622,7 @@ var require_package = __commonJS({
   "package.json"(exports, module) {
     module.exports = {
       name: "@workspace/wa-bridge",
-      version: "1.2.24",
+      version: "1.2.25",
       description: "Telegram \u2194 WhatsApp Automation Bridge \u2014 Production-Grade Multi-Device Control Center",
       type: "module",
       main: "dist/index.js",
