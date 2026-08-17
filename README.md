@@ -1,4 +1,4 @@
-# Omega Customer Bot 1.2.19
+# Omega Customer Bot 1.2.20
 
 This repository publishes the source-protected Omega customer runtime. Customers deploy with one file: the root `index.js` bootstrap. It downloads the verified stable runtime, installs production dependencies, preserves the previous working release when an update fails, and starts the local bot.
 
@@ -17,6 +17,8 @@ Start the server and wait for the live setup display. The bootstrap downloads th
 The setup asks for a Telegram token first. To create one, open Telegram, search for **@BotFather**, send `/newbot`, follow the instructions, and paste the resulting token into the panel console. Type `skip` if Telegram control is not required.
 
 If Telegram is enabled, the setup asks for your owner chat ID. Open the parent Omega bot and send `/getid` (or `/id`), then paste the numeric **Your user ID** value into the panel console. This makes you the owner of this customer deployment only; it does not transfer the parent admin panel or operator identity.
+
+The setup then asks for the personal WhatsApp number that should control the customer bot. Enter the controller number, not the WhatsApp number being paired as the bot account. That number is stored as the session owner, so normal WhatsApp commands work immediately while other users remain protected by the sudo gate. If you skip it, allocate the number later through the customer Telegram bot’s Sudo menu.
 
 The setup asks for a short WhatsApp session name first, then the WhatsApp number. Use names such as `Main`, `Work`, or `Store` so multiple connections remain easy to identify. Enter the full number with country code and no spaces, for example `2348012345678`. Pairing has a one-minute countdown. A successful session is preserved across restarts. Failed, expired, revoked, or abandoned pairing attempts are removed immediately, so stale Pair or Resume buttons are not retained.
 
