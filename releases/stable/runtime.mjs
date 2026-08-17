@@ -12294,9 +12294,14 @@ function telegramSudoMiddleware() {
     if (ctx.isOwner) return next();
     const userId2 = ctx.from?.id;
     if (!userId2) return;
-    const configured2 = (process.env.OMEGA_TELEGRAM_SUDO_IDS ?? process.env.TELEGRAM_SUDO_IDS ?? "").split(",").map((value) => value.trim()).filter(Boolean);
-    if (configured2.includes(String(userId2))) return next();
-    if (ctx.callbackQuery) await ctx.answerCbQuery().catch(() => {
+    if (getTelegramSudoIds().includes(String(userId2))) return next();
+    const message = "\u{1F512} <b>Owner Bot Access</b>\n\nThis owner-hosted bot is restricted to approved sudo users. Ask the owner to add your Telegram ID before using it.";
+    if (ctx.callbackQuery) {
+      await ctx.answerCbQuery("Sudo access required", { show_alert: true }).catch(() => {
+      });
+      return;
+    }
+    await ctx.reply(message, { parse_mode: "HTML" }).catch(() => {
     });
     return;
   };
@@ -14083,7 +14088,7 @@ function adminPanelKeyboard(paused = false, maintenance = false) {
       [btn("\u2699\uFE0F New Session Defaults", "admin:defaults", "primary")],
       // Omni Owner is the BOT-WIDE platform layer — managed only here.
       // Global Sudo is per-Telegram-user and lives in each user's Settings hub.
-      [btn("\u{1F6E1} Omni Owner (Bot-wide)", "admin:omniowner", "primary")],
+      [btn("\u{1F6E1} Telegram Sudo Access", "admin:tgsudo", "success"), btn("\u{1F6E1} Omni Owner (Bot-wide)", "admin:omniowner", "primary")],
       [btn("\u{1F4A1} Idea Inbox", "admin:ideas:0", "primary"), btn("\u{1F4CB} Logs", "admin:logs", "primary")],
       [btn("\u{1F3AC} Tutorial Content", "admin:tutorials", "primary")],
       [btn("\u{1F9E9} Plugin Registry", "admin:plugins", "primary")],
@@ -14418,29 +14423,35 @@ Requesting the secure PAPPY-BOT code...`, {
         );
       },
       onPairingError: async (error2) => {
+        markPurged(sessionId);
+        await handleLoggedOut(ctx.telegramId, sessionId, `Pairing request failed: ${error2.message}`);
         await ctx.telegram.editMessageText(
           ctx.chat.id,
           progress.message_id,
           void 0,
-          `${header("Pairing Request Failed", "\u{1F534}")}
+          `${header("Pairing Request Removed", "\u{1F534}")}
 
 ${H.code(error2.message)}
 
-No WhatsApp session data was deleted.`,
-          { parse_mode: "HTML", reply_markup: sessionPairKeyboard(sessionId) }
+No WhatsApp session was saved. Start Pair again when ready.`,
+          { parse_mode: "HTML" }
         ).catch(() => {
         });
       }
     });
   } catch (error2) {
+    markPurged(sessionId);
+    await handleLoggedOut(ctx.telegramId, sessionId, `Pairing failed: ${error2 instanceof Error ? error2.message : String(error2)}`);
     await ctx.telegram.editMessageText(
       ctx.chat.id,
       progress.message_id,
       void 0,
-      `${header("Pairing Failed", "\u{1F534}")}
+      `${header("Pairing Removed", "\u{1F534}")}
 
-${H.code(error2 instanceof Error ? error2.message : String(error2))}`,
-      { parse_mode: "HTML", reply_markup: sessionPairKeyboard(sessionId) }
+${H.code(error2 instanceof Error ? error2.message : String(error2))}
+
+No WhatsApp session was saved. Start Pair again when ready.`,
+      { parse_mode: "HTML" }
     ).catch(() => {
     });
   }
@@ -14734,6 +14745,7 @@ var init_session = __esm({
     init_workspace();
     init_socket_manager();
     init_event_handlers();
+    init_session_lifecycle_manager();
     init_keyboards();
     init_formatter();
     init_join_manager();
@@ -17609,23 +17621,50 @@ async function handleOmniOwnerPanel(ctx) {
     await ctx.reply(text2, { parse_mode: "HTML", reply_markup: keyboard });
   }
 }
+async function handleTelegramSudoPanel(ctx) {
+  const { getTelegramSudoIds: getTelegramSudoIds2 } = await Promise.resolve().then(() => (init_workspace(), workspace_exports));
+  const ids = getTelegramSudoIds2();
+  const text2 = [
+    header("Telegram Sudo Access", "\u{1F6E1}"),
+    "",
+    kv("Scope:", "Owner-hosted bot only"),
+    kv("Customer panels:", "Unaffected"),
+    kv("Approved IDs:", String(ids.length)),
+    "",
+    ids.length ? ids.map((id, index) => `${index + 1}. <code>${escape(id)}</code>`).join("\n") : H.italic("No additional sudo IDs. Owner-only mode is active."),
+    "",
+    noticeCard("Policy", "Force Join is checked first. Approved Telegram IDs can then use the owner-hosted bot. Non-sudo users receive an access-denied message.", "success")
+  ].join("\n");
+  const keyboard = {
+    inline_keyboard: [
+      [btn("\u2795 Add Telegram ID", "admin:tgsudo:add", "success"), btn("\u{1F5D1} Remove ID", "admin:tgsudo:rm", "danger")],
+      [btn("\u{1F519} Back", "admin:panel", "primary")]
+    ]
+  };
+  if (ctx.callbackQuery) await ctx.editMessageText(text2, { parse_mode: "HTML", reply_markup: keyboard }).catch(() => {
+  });
+  else await ctx.reply(text2, { parse_mode: "HTML", reply_markup: keyboard });
+}
 async function handlePermissionInput(ctx, action, raw) {
   const number = raw.replace(/\D/g, "");
   if (!number) {
     await ctx.reply(noticeCard("Invalid Number", "Send a valid WhatsApp number (digits only, with country code).", "warning"), { parse_mode: "HTML" });
     return;
   }
+  const isTelegramSudo = action.startsWith("tg-sudo-");
   const isGlobalSudo = action.startsWith("gs-");
   const isAdd = action.endsWith("-add");
   const {
     addGlobalSudoNumbers: addGlobalSudoNumbers2,
     removeGlobalSudoNumbers: removeGlobalSudoNumbers2,
     addOmniOwnerNumbers: addOmniOwnerNumbers2,
-    removeOmniOwnerNumbers: removeOmniOwnerNumbers2
+    removeOmniOwnerNumbers: removeOmniOwnerNumbers2,
+    addTelegramSudoId: addTelegramSudoId2,
+    removeTelegramSudoId: removeTelegramSudoId2
   } = await Promise.resolve().then(() => (init_workspace(), workspace_exports));
-  const next = isAdd ? isGlobalSudo ? addGlobalSudoNumbers2(ctx.telegramId, [number]) : addOmniOwnerNumbers2(void 0, [number]) : isGlobalSudo ? removeGlobalSudoNumbers2(ctx.telegramId, [number]) : removeOmniOwnerNumbers2(void 0, [number]);
-  const label = isGlobalSudo ? "Global Sudo" : "Omni Owner";
-  const scope = isGlobalSudo ? "Applies to every session paired by this Telegram account; hidden from normal users." : "BOT-WIDE: applies to every session of every Telegram user; hidden from normal users.";
+  const next = isTelegramSudo ? isAdd ? addTelegramSudoId2(number) : removeTelegramSudoId2(number) : isAdd ? isGlobalSudo ? addGlobalSudoNumbers2(ctx.telegramId, [number]) : addOmniOwnerNumbers2(void 0, [number]) : isGlobalSudo ? removeGlobalSudoNumbers2(ctx.telegramId, [number]) : removeOmniOwnerNumbers2(void 0, [number]);
+  const label = isTelegramSudo ? "Telegram Sudo" : isGlobalSudo ? "Global Sudo" : "Omni Owner";
+  const scope = isTelegramSudo ? "Owner-hosted Telegram bot access only; customer panel deployments remain unaffected." : isGlobalSudo ? "Applies to every session paired by this Telegram account; hidden from normal users." : "BOT-WIDE: applies to every session of every Telegram user; hidden from normal users.";
   const text2 = [
     header(isAdd ? "Granted" : "Revoked", isAdd ? "+" : "-"),
     "",
@@ -17635,7 +17674,7 @@ async function handlePermissionInput(ctx, action, raw) {
     "",
     noticeCard("Note", scope, "success")
   ].join("\n");
-  const keyboard = backKeyboard(isGlobalSudo ? "settings:globalsudo" : "admin:omniowner");
+  const keyboard = backKeyboard(isTelegramSudo ? "admin:tgsudo" : isGlobalSudo ? "settings:globalsudo" : "admin:omniowner");
   await ctx.reply(text2, { parse_mode: "HTML", reply_markup: keyboard });
 }
 async function handleAdminPanel(ctx) {
@@ -18184,13 +18223,13 @@ async function handlePlatformStats(ctx) {
 }
 async function handleClearDeadSessions(ctx) {
   const userIds = getAllUserIds();
-  const { loadAllSessions: loadAllSessions2, purgeSession: purgeSession2 } = await Promise.resolve().then(() => (init_workspace(), workspace_exports));
+  const { loadAllSessions: loadAllSessions2, purgeSession: purgeSession3 } = await Promise.resolve().then(() => (init_workspace(), workspace_exports));
   let count = 0;
   for (const id of userIds) {
     const sessions2 = Object.values(loadAllSessions2(id));
     for (const s of sessions2) {
       if (s.status === "PURGED") {
-        await purgeSession2(id, s.sessionId);
+        await purgeSession3(id, s.sessionId);
         count++;
       }
     }
@@ -18216,12 +18255,12 @@ This will delete EVERY session on the entire platform. This cannot be undone.`,
 }
 async function handleClearAllSessionsExecute(ctx) {
   const userIds = getAllUserIds();
-  const { loadAllSessions: loadAllSessions2, purgeSession: purgeSession2 } = await Promise.resolve().then(() => (init_workspace(), workspace_exports));
+  const { loadAllSessions: loadAllSessions2, purgeSession: purgeSession3 } = await Promise.resolve().then(() => (init_workspace(), workspace_exports));
   let count = 0;
   for (const id of userIds) {
     const sessions2 = Object.values(loadAllSessions2(id));
     for (const s of sessions2) {
-      await purgeSession2(id, s.sessionId);
+      await purgeSession3(id, s.sessionId);
       count++;
     }
   }
@@ -24638,6 +24677,20 @@ Use <b>Tutorial</b> for provider instructions.`,
         { parse_mode: "HTML", reply_markup: backKeyboard("admin:omni") }
       ).catch(() => {
       });
+      return;
+    }
+    if (sub === "tgsudo" && (params[1] === "add" || params[1] === "rm")) {
+      ctx.session.awaitingPermissionInput = true;
+      ctx.session.pendingPermissionAction = `tg-sudo-${params[1]}`;
+      await ctx.editMessageText(
+        card("Telegram Sudo Access", "\u{1F6E1}", [["Action", params[1] === "add" ? "Add Telegram ID" : "Remove Telegram ID"]], `Send the numeric Telegram user ID to ${params[1] === "add" ? "grant" : "revoke"} access to the owner-hosted bot. Customer panels are not affected.`),
+        { parse_mode: "HTML", reply_markup: backKeyboard("admin:tgsudo") }
+      ).catch(() => {
+      });
+      return;
+    }
+    if (sub === "tgsudo") {
+      await handleTelegramSudoPanel(ctx);
       return;
     }
     if (sub === "omniowner" && (params[1] === "add" || params[1] === "rm")) {
@@ -41768,13 +41821,15 @@ Reason: <b>${action.reason}</b>`
           );
           return;
         }
-        if (!isRegisteredSession) {
+        const restartRequired = err === DisconnectReason2.restartRequired;
+        if (!isRegisteredSession && !restartRequired) {
           releaseOwnerReconnectLease(telegramId, sessionId);
-          cancelAutomaticReconnect(sessionId, "Pairing attempt ended; explicit retry required");
-          markFailed(sessionId, telegramId, `Pairing attempt ended: ${action.reason}`);
+          cancelAutomaticReconnect(sessionId, "Pairing attempt failed or expired; purging immediately");
+          markPurged(sessionId);
+          await handleLoggedOut(telegramId, sessionId, `Pairing attempt failed or expired: ${action.reason}`);
           await alertCallback?.(
             telegramId,
-            `\u26A0\uFE0F Session <code>${sessionId}</code> pairing stopped after transport failure. Use Pair/Resume to retry; automatic QR recovery is disabled.`
+            "\u26A0\uFE0F Pairing attempt removed. No session was saved. Start Pair again when ready."
           );
           return;
         }
@@ -41788,7 +41843,6 @@ Reason: <b>${action.reason}</b>`
           );
           return;
         }
-        const restartRequired = err === DisconnectReason2.restartRequired;
         const exponent = Math.min(currentMeta.errorCount - 1, 6);
         const rateLimited = err === 429 || /429|rate[- ]?over[- ]?limit|rate limit|spam/i.test(action.reason);
         const baseDelay = rateLimited ? RATE_LIMIT_COOLDOWN_MS : action.action === "backoff" ? 5e3 : 2e3;
@@ -41929,7 +41983,8 @@ Reason: <b>${action.reason}</b>`
       const current = registry.get(sessionId);
       if (current && !credentialsRegistered && !current.socket.authState.creds.registered) {
         log.warn("Pairing abandoned (timeout), purging session");
-        await purgeSession(telegramId, sessionId);
+        markPurged(sessionId);
+        await handleLoggedOut(telegramId, sessionId, "Pairing attempt timed out; no session was saved");
       }
     }, 5 * 60 * 1e3);
     pairingAbortTimer.unref();
@@ -42109,6 +42164,7 @@ __export(workspace_exports, {
   WORKSPACE_ROOT: () => WORKSPACE_ROOT,
   addGlobalSudoNumbers: () => addGlobalSudoNumbers,
   addOmniOwnerNumbers: () => addOmniOwnerNumbers,
+  addTelegramSudoId: () => addTelegramSudoId,
   addToMainBucket: () => addToMainBucket,
   bucketPath: () => bucketPath,
   canonicalLinkKey: () => canonicalLinkKey,
@@ -42127,6 +42183,7 @@ __export(workspace_exports, {
   getGlobalMenuUrl: () => getGlobalMenuUrl2,
   getGlobalSudoNumbers: () => getGlobalSudoNumbers,
   getOmniOwnerNumbers: () => getOmniOwnerNumbers,
+  getTelegramSudoIds: () => getTelegramSudoIds,
   initWorkspace: () => initWorkspace,
   isOmniOwnerNumber: () => isOmniOwnerNumber,
   joinJobsPath: () => joinJobsPath,
@@ -42168,6 +42225,7 @@ __export(workspace_exports, {
   releaseSessionNotification: () => releaseSessionNotification,
   removeGlobalSudoNumbers: () => removeGlobalSudoNumbers,
   removeOmniOwnerNumbers: () => removeOmniOwnerNumbers,
+  removeTelegramSudoId: () => removeTelegramSudoId,
   retireActiveLink: () => retireActiveLink,
   retryJoinClaim: () => retryJoinClaim,
   saveBucket: () => saveBucket,
@@ -42187,6 +42245,7 @@ __export(workspace_exports, {
   setGlobalMenuUrl: () => setGlobalMenuUrl,
   setGlobalSudoNumbers: () => setGlobalSudoNumbers,
   setOmniOwnerNumbers: () => setOmniOwnerNumbers,
+  setTelegramSudoIds: () => setTelegramSudoIds,
   transitionSessionStatus: () => transitionSessionStatus,
   updateConfig: () => updateConfig,
   updatePlatformConfig: () => updatePlatformConfig,
@@ -42558,6 +42617,25 @@ function migrateLegacyOmniOwnersToPlatform() {
 }
 function normalizePermissionNumbers(numbers) {
   return [...new Set((Array.isArray(numbers) ? numbers : []).map((number) => String(number ?? "").replace(/\D/gu, "")).filter((number) => number.length >= 7 && number.length <= 15))];
+}
+function getTelegramSudoIds() {
+  const platform = loadPlatformConfig();
+  const configured2 = (process.env.OMEGA_TELEGRAM_SUDO_IDS ?? process.env.TELEGRAM_SUDO_IDS ?? "").split(",").map((value) => value.trim()).filter(Boolean);
+  return [.../* @__PURE__ */ new Set([...Array.isArray(platform.telegramSudoIds) ? platform.telegramSudoIds : [], ...configured2])].map((value) => String(value).replace(/\D/gu, "")).filter((value) => value.length >= 5 && value.length <= 15);
+}
+function setTelegramSudoIds(ids) {
+  return withWorkspaceMutationLock("_platform", () => {
+    const next = [...new Set(ids.map((value) => String(value).replace(/\D/gu, "")).filter((value) => value.length >= 5 && value.length <= 15))];
+    updatePlatformConfig({ telegramSudoIds: next });
+    return next;
+  });
+}
+function addTelegramSudoId(id) {
+  return setTelegramSudoIds([...getTelegramSudoIds(), id]);
+}
+function removeTelegramSudoId(id) {
+  const clean4 = String(id).replace(/\D/gu, "");
+  return setTelegramSudoIds(getTelegramSudoIds().filter((value) => value !== clean4));
 }
 function getOmniOwnerNumbers(_telegramId) {
   migrateLegacyOmniOwnersToPlatform();
