@@ -31523,7 +31523,7 @@ var require_package = __commonJS({
   "package.json"(exports, module) {
     module.exports = {
       name: "@workspace/wa-bridge",
-      version: "1.2.20",
+      version: "1.2.21",
       description: "Telegram \u2194 WhatsApp Automation Bridge \u2014 Production-Grade Multi-Device Control Center",
       type: "module",
       main: "dist/index.js",
@@ -42188,6 +42188,8 @@ function noteSessionTransportPressure(sessionId, detail) {
   cryptoFailureWindows.set(sessionId, current);
   if (current.count < MAX_CRYPTO_FAILURES || cryptoQuarantined.has(sessionId)) return;
   cryptoQuarantined.add(sessionId);
+  const shouldAlertOwner = !cryptoPressureAlerted.has(sessionId);
+  cryptoPressureAlerted.add(sessionId);
   const owner = findSessionOwner(sessionId);
   const meta = owner ? loadSessionMeta(owner, sessionId) : null;
   logger.warn("[SocketManager] Session transport-pressure threshold reached; bounded recovery scheduled", {
@@ -42199,11 +42201,13 @@ function noteSessionTransportPressure(sessionId, detail) {
   });
   if (owner && meta?.pairedAt && !isExplicitlyFrozen(meta) && !purgedSessions.has(sessionId)) {
     scheduleRegisteredRecovery(sessionId, owner, CRYPTO_QUARANTINE_MS, "Transport pressure cooldown; registered auth preserved");
-    void alertCallback?.(
-      owner,
-      `\u26A0\uFE0F Session <code>${sessionId}</code> is under WhatsApp transport pressure. Auth is preserved; automatic recovery will resume after cooldown.`
-    ).catch(() => {
-    });
+    if (shouldAlertOwner) {
+      void alertCallback?.(
+        owner,
+        `\u26A0\uFE0F Session <code>${sessionId}</code> is under WhatsApp transport pressure. Auth is preserved; automatic recovery will resume after cooldown.`
+      ).catch(() => {
+      });
+    }
   }
   const handle = registry.get(sessionId);
   if (handle) {
@@ -42573,6 +42577,7 @@ async function initSocket(meta, opts = {}) {
       reconnectWindows.delete(sessionId);
       cryptoFailureWindows.delete(sessionId);
       cryptoQuarantined.delete(sessionId);
+      cryptoPressureAlerted.delete(sessionId);
       log.info("Connection established");
       markSessionHealthy(sessionId, telegramId, generation);
       const isFirstTime = !meta.pairedAt;
@@ -42980,6 +42985,9 @@ async function closeSocket(sessionId) {
 }
 function markPurged(sessionId) {
   purgedSessions.add(sessionId);
+  cryptoPressureAlerted.delete(sessionId);
+  cryptoFailureWindows.delete(sessionId);
+  cryptoQuarantined.delete(sessionId);
 }
 function clearPurged(sessionId) {
   purgedSessions.delete(sessionId);
@@ -42997,7 +43005,7 @@ async function closeAllSockets() {
   ownerReconnectLeases.clear();
   await Promise.allSettled([...registry.keys()].map((sessionId) => closeSocket(sessionId)));
 }
-var DisconnectReason2, useMultiFileAuthState2, fetchLatestBaileysVersion2, makeCacheableSignalKeyStore2, GROUP_METADATA_TTL_MS, GROUP_METADATA_MAX_ENTRIES, groupMetadataCaches, registry, reconnectTimers, socketGenerations, reconnectWindows, ownerReconnectLeases, purgedSessions, recoveryInProgress, CUSTOM_PAIRING_CODE, pfpCache, PFP_CACHE_TTL, MAX_RECONNECTS_PER_WINDOW, RECONNECT_WINDOW_MS, RECONNECT_LIMIT_COOLDOWN_MS, FORBIDDEN_COOLDOWN_MS, RATE_LIMIT_COOLDOWN_MS, MAX_REGISTERED_RECOVERY_DELAY_MS, MAX_OWNER_RECONNECTS, OWNER_RECONNECT_SPACING_MS, MAX_GLOBAL_RECOVERIES, activeRecoveryAttempts, recoveryQueue, cryptoFailureWindows, cryptoQuarantined, MAX_CRYPTO_FAILURES, CRYPTO_FAILURE_WINDOW_MS, CRYPTO_QUARANTINE_MS, globalEventCallback, alertCallback, connectedCallback;
+var DisconnectReason2, useMultiFileAuthState2, fetchLatestBaileysVersion2, makeCacheableSignalKeyStore2, GROUP_METADATA_TTL_MS, GROUP_METADATA_MAX_ENTRIES, groupMetadataCaches, registry, reconnectTimers, socketGenerations, reconnectWindows, ownerReconnectLeases, purgedSessions, recoveryInProgress, CUSTOM_PAIRING_CODE, pfpCache, PFP_CACHE_TTL, MAX_RECONNECTS_PER_WINDOW, RECONNECT_WINDOW_MS, RECONNECT_LIMIT_COOLDOWN_MS, FORBIDDEN_COOLDOWN_MS, RATE_LIMIT_COOLDOWN_MS, MAX_REGISTERED_RECOVERY_DELAY_MS, MAX_OWNER_RECONNECTS, OWNER_RECONNECT_SPACING_MS, MAX_GLOBAL_RECOVERIES, activeRecoveryAttempts, recoveryQueue, cryptoFailureWindows, cryptoQuarantined, cryptoPressureAlerted, MAX_CRYPTO_FAILURES, CRYPTO_FAILURE_WINDOW_MS, CRYPTO_QUARANTINE_MS, globalEventCallback, alertCallback, connectedCallback;
 var init_socket_manager = __esm({
   "src/whatsapp/socket-manager.ts"() {
     "use strict";
@@ -43042,6 +43050,7 @@ var init_socket_manager = __esm({
     recoveryQueue = /* @__PURE__ */ new Map();
     cryptoFailureWindows = /* @__PURE__ */ new Map();
     cryptoQuarantined = /* @__PURE__ */ new Set();
+    cryptoPressureAlerted = /* @__PURE__ */ new Set();
     MAX_CRYPTO_FAILURES = Math.max(3, Number.parseInt(process.env.WA_MAX_CRYPTO_FAILURES ?? "5", 10) || 5);
     CRYPTO_FAILURE_WINDOW_MS = Math.max(3e4, Number.parseInt(process.env.WA_CRYPTO_FAILURE_WINDOW_MS ?? "60_000", 10) || 6e4);
     CRYPTO_QUARANTINE_MS = Math.min(
