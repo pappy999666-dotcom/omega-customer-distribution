@@ -27137,133 +27137,30 @@ var init_menu_canvas = __esm({
   }
 });
 
-// src/media/PermissionManager.ts
+// src/whatsapp/private-mode-guard.ts
 function normalizeNumber2(value) {
   return String(value ?? "").replace(/\D/g, "");
 }
-function normalizeCommand(value) {
-  return String(value ?? "").trim().toLowerCase().replace(/^[./!]+/, "");
+function includesNumber(numbers, normalized) {
+  return Boolean(normalized) && (numbers ?? []).some((number) => normalizeNumber2(number) === normalized);
 }
-var userPermKey, groupPermKey, NEVER_GRANTABLE, PermissionManager;
-var init_PermissionManager = __esm({
-  "src/media/PermissionManager.ts"() {
-    "use strict";
-    init_workspace();
-    userPermKey = (config2) => config2.userCommandPerms ?? {};
-    groupPermKey = (config2) => config2.groupCommandPerms ?? {};
-    NEVER_GRANTABLE = /* @__PURE__ */ new Set([
-      "cmdpmt",
-      "rmcmdpmt",
-      "gcmdpmt",
-      "rmgcmdpmt",
-      "cmdpmtlist"
-    ]);
-    PermissionManager = class {
-      /** Resolve whether a sender may run a command. Pure + synchronous. */
-      static canUse(config2, input2) {
-        const command = normalizeCommand(input2.command);
-        if (!command) return false;
-        if (NEVER_GRANTABLE.has(command)) return false;
-        const user = normalizeNumber2(input2.userNumber);
-        if (!user) return false;
-        const userGrants = userPermKey(config2)[user];
-        if (userGrants?.some((c) => normalizeCommand(c) === command)) return true;
-        if (input2.groupJid?.endsWith("@g.us")) {
-          const groupGrants = groupPermKey(config2)[input2.groupJid];
-          if (groupGrants?.some((c) => normalizeCommand(c) === command)) return true;
-        }
-        return false;
-      }
-      static grantUser(telegramId, sessionId, userNumber, command) {
-        const user = normalizeNumber2(userNumber);
-        const cmd = normalizeCommand(command);
-        if (!user || !cmd) return { ok: false, added: false };
-        if (NEVER_GRANTABLE.has(cmd)) return { ok: false, added: false };
-        const config2 = updateSessionConfig(telegramId, sessionId, {});
-        const map = { ...userPermKey(config2) };
-        const list = new Set((map[user] ?? []).map(normalizeCommand));
-        const added = !list.has(cmd);
-        list.add(cmd);
-        map[user] = [...list];
-        updateSessionConfig(telegramId, sessionId, { userCommandPerms: map });
-        return { ok: true, added };
-      }
-      static revokeUser(telegramId, sessionId, userNumber, command) {
-        const user = normalizeNumber2(userNumber);
-        const cmd = normalizeCommand(command);
-        if (!user || !cmd) return { ok: false, removed: false };
-        const config2 = updateSessionConfig(telegramId, sessionId, {});
-        const map = { ...userPermKey(config2) };
-        const list = (map[user] ?? []).filter((c) => normalizeCommand(c) !== cmd);
-        if (list.length > 0) map[user] = list;
-        else delete map[user];
-        const removed = (userPermKey(config2)[user] ?? []).some((c) => normalizeCommand(c) === cmd);
-        updateSessionConfig(telegramId, sessionId, { userCommandPerms: map });
-        return { ok: true, removed };
-      }
-      static grantGroup(telegramId, sessionId, groupJid, command) {
-        if (!groupJid.endsWith("@g.us")) return { ok: false, added: false };
-        const cmd = normalizeCommand(command);
-        if (!cmd) return { ok: false, added: false };
-        if (NEVER_GRANTABLE.has(cmd)) return { ok: false, added: false };
-        const config2 = updateSessionConfig(telegramId, sessionId, {});
-        const map = { ...groupPermKey(config2) };
-        const list = new Set((map[groupJid] ?? []).map(normalizeCommand));
-        const added = !list.has(cmd);
-        list.add(cmd);
-        map[groupJid] = [...list];
-        updateSessionConfig(telegramId, sessionId, { groupCommandPerms: map });
-        return { ok: true, added };
-      }
-      static revokeGroup(telegramId, sessionId, groupJid, command) {
-        if (!groupJid.endsWith("@g.us")) return { ok: false, removed: false };
-        const cmd = normalizeCommand(command);
-        if (!cmd) return { ok: false, removed: false };
-        const config2 = updateSessionConfig(telegramId, sessionId, {});
-        const map = { ...groupPermKey(config2) };
-        const list = (map[groupJid] ?? []).filter((c) => normalizeCommand(c) !== cmd);
-        if (list.length > 0) map[groupJid] = list;
-        else delete map[groupJid];
-        const removed = (groupPermKey(config2)[groupJid] ?? []).some((c) => normalizeCommand(c) === cmd);
-        updateSessionConfig(telegramId, sessionId, { groupCommandPerms: map });
-        return { ok: true, removed };
-      }
-      static listUserGrants(telegramId, sessionId) {
-        const config2 = updateSessionConfig(telegramId, sessionId, {});
-        return { ...userPermKey(config2) };
-      }
-      static listGroupGrants(telegramId, sessionId) {
-        const config2 = updateSessionConfig(telegramId, sessionId, {});
-        return { ...groupPermKey(config2) };
-      }
-    };
-  }
-});
-
-// src/whatsapp/private-mode-guard.ts
-function interactionCommandHint(id) {
-  if (id.startsWith("run:")) return id.split(":")[1] ?? "interaction";
-  if (id.startsWith("media:deliver:")) return "media";
-  if (id.startsWith("menu:") || id.startsWith("cmd:")) return "help";
-  return "interaction";
+function isPrivateCommandAuthorized(input2) {
+  const { config: config2, telegramId, senderNumber, fromMe } = input2;
+  if (config2.publicMode) return true;
+  const normalized = normalizeNumber2(senderNumber);
+  if (fromMe) return true;
+  if (includesNumber(config2.ownerWaNumbers, normalized)) return true;
+  if (isOmniOwnerNumber(telegramId, normalized)) return true;
+  if (getGlobalSudoNumbers(telegramId).some((number) => normalizeNumber2(number) === normalized)) return true;
+  return includesNumber(config2.sudoNumbers, normalized);
 }
 function isPrivateInteractionAuthorized(input2) {
-  const { config: config2, telegramId, senderNumber, fromMe, interactionId, groupJid } = input2;
-  if (config2.publicMode) return true;
-  const normalized = String(senderNumber ?? "").replace(/\D/g, "");
-  const sudo = getGlobalSudoNumbers(telegramId).some((number) => String(number).replace(/\D/g, "") === normalized) || (config2.sudoNumbers ?? []).some((number) => String(number).replace(/\D/g, "") === normalized);
-  if (fromMe || isOmniOwnerNumber(telegramId, normalized) || sudo) return true;
-  return PermissionManager.canUse(config2, {
-    userNumber: normalized,
-    command: interactionCommandHint(interactionId),
-    groupJid
-  });
+  return isPrivateCommandAuthorized(input2);
 }
 var init_private_mode_guard = __esm({
   "src/whatsapp/private-mode-guard.ts"() {
     "use strict";
     init_workspace();
-    init_PermissionManager();
   }
 });
 
@@ -30876,6 +30773,109 @@ var init_PollManager = __esm({
   }
 });
 
+// src/media/PermissionManager.ts
+function normalizeNumber3(value) {
+  return String(value ?? "").replace(/\D/g, "");
+}
+function normalizeCommand(value) {
+  return String(value ?? "").trim().toLowerCase().replace(/^[./!]+/, "");
+}
+var userPermKey, groupPermKey, NEVER_GRANTABLE, PermissionManager;
+var init_PermissionManager = __esm({
+  "src/media/PermissionManager.ts"() {
+    "use strict";
+    init_workspace();
+    userPermKey = (config2) => config2.userCommandPerms ?? {};
+    groupPermKey = (config2) => config2.groupCommandPerms ?? {};
+    NEVER_GRANTABLE = /* @__PURE__ */ new Set([
+      "cmdpmt",
+      "rmcmdpmt",
+      "gcmdpmt",
+      "rmgcmdpmt",
+      "cmdpmtlist"
+    ]);
+    PermissionManager = class {
+      /** Resolve whether a sender may run a command. Pure + synchronous. */
+      static canUse(config2, input2) {
+        const command = normalizeCommand(input2.command);
+        if (!command) return false;
+        if (NEVER_GRANTABLE.has(command)) return false;
+        const user = normalizeNumber3(input2.userNumber);
+        if (!user) return false;
+        const userGrants = userPermKey(config2)[user];
+        if (userGrants?.some((c) => normalizeCommand(c) === command)) return true;
+        if (input2.groupJid?.endsWith("@g.us")) {
+          const groupGrants = groupPermKey(config2)[input2.groupJid];
+          if (groupGrants?.some((c) => normalizeCommand(c) === command)) return true;
+        }
+        return false;
+      }
+      static grantUser(telegramId, sessionId, userNumber, command) {
+        const user = normalizeNumber3(userNumber);
+        const cmd = normalizeCommand(command);
+        if (!user || !cmd) return { ok: false, added: false };
+        if (NEVER_GRANTABLE.has(cmd)) return { ok: false, added: false };
+        const config2 = updateSessionConfig(telegramId, sessionId, {});
+        const map = { ...userPermKey(config2) };
+        const list = new Set((map[user] ?? []).map(normalizeCommand));
+        const added = !list.has(cmd);
+        list.add(cmd);
+        map[user] = [...list];
+        updateSessionConfig(telegramId, sessionId, { userCommandPerms: map });
+        return { ok: true, added };
+      }
+      static revokeUser(telegramId, sessionId, userNumber, command) {
+        const user = normalizeNumber3(userNumber);
+        const cmd = normalizeCommand(command);
+        if (!user || !cmd) return { ok: false, removed: false };
+        const config2 = updateSessionConfig(telegramId, sessionId, {});
+        const map = { ...userPermKey(config2) };
+        const list = (map[user] ?? []).filter((c) => normalizeCommand(c) !== cmd);
+        if (list.length > 0) map[user] = list;
+        else delete map[user];
+        const removed = (userPermKey(config2)[user] ?? []).some((c) => normalizeCommand(c) === cmd);
+        updateSessionConfig(telegramId, sessionId, { userCommandPerms: map });
+        return { ok: true, removed };
+      }
+      static grantGroup(telegramId, sessionId, groupJid, command) {
+        if (!groupJid.endsWith("@g.us")) return { ok: false, added: false };
+        const cmd = normalizeCommand(command);
+        if (!cmd) return { ok: false, added: false };
+        if (NEVER_GRANTABLE.has(cmd)) return { ok: false, added: false };
+        const config2 = updateSessionConfig(telegramId, sessionId, {});
+        const map = { ...groupPermKey(config2) };
+        const list = new Set((map[groupJid] ?? []).map(normalizeCommand));
+        const added = !list.has(cmd);
+        list.add(cmd);
+        map[groupJid] = [...list];
+        updateSessionConfig(telegramId, sessionId, { groupCommandPerms: map });
+        return { ok: true, added };
+      }
+      static revokeGroup(telegramId, sessionId, groupJid, command) {
+        if (!groupJid.endsWith("@g.us")) return { ok: false, removed: false };
+        const cmd = normalizeCommand(command);
+        if (!cmd) return { ok: false, removed: false };
+        const config2 = updateSessionConfig(telegramId, sessionId, {});
+        const map = { ...groupPermKey(config2) };
+        const list = (map[groupJid] ?? []).filter((c) => normalizeCommand(c) !== cmd);
+        if (list.length > 0) map[groupJid] = list;
+        else delete map[groupJid];
+        const removed = (groupPermKey(config2)[groupJid] ?? []).some((c) => normalizeCommand(c) === cmd);
+        updateSessionConfig(telegramId, sessionId, { groupCommandPerms: map });
+        return { ok: true, removed };
+      }
+      static listUserGrants(telegramId, sessionId) {
+        const config2 = updateSessionConfig(telegramId, sessionId, {});
+        return { ...userPermKey(config2) };
+      }
+      static listGroupGrants(telegramId, sessionId) {
+        const config2 = updateSessionConfig(telegramId, sessionId, {});
+        return { ...groupPermKey(config2) };
+      }
+    };
+  }
+});
+
 // src/media/MediaSessionStore.ts
 import crypto12 from "node:crypto";
 var TTL_MS2, SWEEP_INTERVAL_MS, MediaSessionStore, mediaSessionStore;
@@ -32487,7 +32487,7 @@ var require_package = __commonJS({
   "package.json"(exports, module) {
     module.exports = {
       name: "@workspace/wa-bridge",
-      version: "1.2.22",
+      version: "1.2.23",
       description: "Telegram \u2194 WhatsApp Automation Bridge \u2014 Production-Grade Multi-Device Control Center",
       type: "module",
       main: "dist/index.js",
@@ -33067,7 +33067,7 @@ var init_pending_restores = __esm({
 });
 
 // src/whatsapp/anti-system/group-security-engine.ts
-function normalizeNumber3(jid) {
+function normalizeNumber4(jid) {
   if (!jid) return "";
   return (jid.split("@")[0] ?? "").split(":")[0].replace(/\D/g, "");
 }
@@ -33317,7 +33317,7 @@ async function executePunishment(ctx) {
   if (plan.warnActor) {
     executedActions.push("warn");
     if (plan.warnLimit) {
-      const actorNumber = normalizeNumber3(actorJid);
+      const actorNumber = normalizeNumber4(actorJid);
       const count = incrementWarn(sessionId, groupJid, actorNumber, "security");
       if (count >= plan.warnLimit) {
         resetWarn(sessionId, groupJid, actorNumber, "security");
@@ -33371,7 +33371,7 @@ function makeAudit(telegramId, sessionId, groupJid, actorJid, targetJids, event,
     groupId: groupJid,
     groupName: groupJid.split("@")[0] ?? "",
     actorJid,
-    actorNumber: normalizeNumber3(actorJid),
+    actorNumber: normalizeNumber4(actorJid),
     targetJids,
     event,
     enforcementMode,
@@ -33424,7 +33424,7 @@ async function handleAntiDemoteEvent(socket, sessionId, telegramId, update) {
       logger.debug("[SecurityEngine] AntiDemote: no author in event", { sessionId, groupJid });
       return;
     }
-    const actorNumber = normalizeNumber3(actorJid);
+    const actorNumber = normalizeNumber4(actorJid);
     let enforcementTargets;
     if (targetMode === "protected") {
       enforcementTargets = botWasDemoted ? [botJid].filter(Boolean) : [];
@@ -33442,7 +33442,7 @@ async function handleAntiDemoteEvent(socket, sessionId, telegramId, update) {
       });
       return;
     }
-    const targetNumbers = enforcementTargets.map((j) => normalizeNumber3(j));
+    const targetNumbers = enforcementTargets.map((j) => normalizeNumber4(j));
     const nonBotTargets = enforcementTargets.filter((j) => numericId(j) !== botNum);
     const hasBotInTargets = botWasDemoted;
     if (nonBotTargets.length > 0) {
@@ -33576,7 +33576,7 @@ async function handleAntiPromoteEvent(socket, sessionId, telegramId, update) {
       logger.debug("[SecurityEngine] AntiPromote: no author in event", { sessionId, groupJid });
       return;
     }
-    const actorNumber = normalizeNumber3(actorJid);
+    const actorNumber = normalizeNumber4(actorJid);
     let enforcementTargets;
     if (targetMode === "protected") {
       enforcementTargets = [];
@@ -33597,7 +33597,7 @@ async function handleAntiPromoteEvent(socket, sessionId, telegramId, update) {
       });
       return;
     }
-    const targetNumbers = enforcementTargets.map((j) => normalizeNumber3(j));
+    const targetNumbers = enforcementTargets.map((j) => normalizeNumber4(j));
     const botIsAdmin2 = await checkBotIsAdmin(socket, sessionId, groupJid);
     if (!botIsAdmin2) {
       audit.event = "skipped";
@@ -39290,7 +39290,40 @@ async function processMessageWithConfig(sessionId, telegramId, msg, socket, repl
   const stickerMsg = _rawMessage.ephemeralMessage?.message?.stickerMessage ?? _rawMessage.viewOnceMessage?.message?.stickerMessage ?? _rawMessage.viewOnceMessageV2?.message?.stickerMessage ?? msg.message?.stickerMessage;
   const chatRoute = resolvePreviewRoute(msg, text2);
   const sourceExt = chatRoute.route === "AS_IS" ? chatRoute.sourceExt : void 0;
+  let rawSenderJid = msg.key.participant ?? (msg.key.fromMe ? socket.user?.id : msg.key.remoteJid);
+  let senderPhoneOverride;
+  if (rawSenderJid?.endsWith("@lid") && isGroup) {
+    try {
+      const { fetchGroupMeta: _fgm, bestRealJid: _brj } = await Promise.resolve().then(() => (init_group_permissions(), group_permissions_exports));
+      const _meta = await _fgm(socket, groupJid);
+      if (_meta) {
+        const resolved = _brj(_meta.participants, rawSenderJid);
+        if (!resolved.endsWith("@lid")) {
+          rawSenderJid = resolved;
+        } else {
+          const lidNum = (rawSenderJid.split("@")[0] ?? "").split(":")[0] ?? "";
+          const participant = _meta.participants.find(
+            (p) => (p.id.split("@")[0] ?? "").split(":")[0] === lidNum
+          );
+          if (participant?.phoneNumber) {
+            senderPhoneOverride = participant.phoneNumber.replace(/\D/g, "");
+          }
+        }
+      }
+    } catch {
+    }
+  }
+  const senderJid = rawSenderJid;
+  const sudoCheckJid = senderPhoneOverride ? `${senderPhoneOverride}@s.whatsapp.net` : senderJid;
+  const senderNumber = normalizeWhatsAppNumber(sudoCheckJid);
+  const isOwnerSender = Boolean(msg.key.fromMe) || isConfiguredSessionOwner(senderNumber, (configOverride ?? loadSessionConfig(telegramId, sessionId)).ownerWaNumbers ?? []);
   const config2 = configOverride ?? loadSessionConfig(telegramId, sessionId);
+  if (!replyOverride && !isPrivateCommandAuthorized({
+    config: config2,
+    telegramId,
+    senderNumber,
+    fromMe: Boolean(msg.key.fromMe)
+  })) return;
   const sessionMeta = loadSessionMeta(telegramId, sessionId);
   const pluginCommands = await getPluginCommandNames(telegramId, sessionId, socket).catch((err) => {
     logger.warn("[Plugin] command discovery failed; native commands continue", { sessionId, err: String(err) });
@@ -39639,33 +39672,6 @@ async function processMessageWithConfig(sessionId, telegramId, msg, socket, repl
     };
   };
   const commandText = (fallback = "") => parsed.rawRemainder.trim() || quotedText.trim() || fallback;
-  let rawSenderJid = msg.key.participant ?? (msg.key.fromMe ? socket.user?.id : msg.key.remoteJid);
-  let senderPhoneOverride;
-  if (rawSenderJid?.endsWith("@lid") && isGroup) {
-    try {
-      const { fetchGroupMeta: _fgm, bestRealJid: _brj } = await Promise.resolve().then(() => (init_group_permissions(), group_permissions_exports));
-      const _meta = await _fgm(socket, groupJid);
-      if (_meta) {
-        const resolved = _brj(_meta.participants, rawSenderJid);
-        if (!resolved.endsWith("@lid")) {
-          rawSenderJid = resolved;
-        } else {
-          const lidNum = (rawSenderJid.split("@")[0] ?? "").split(":")[0] ?? "";
-          const participant = _meta.participants.find(
-            (p) => (p.id.split("@")[0] ?? "").split(":")[0] === lidNum
-          );
-          if (participant?.phoneNumber) {
-            senderPhoneOverride = participant.phoneNumber.replace(/\D/g, "");
-          }
-        }
-      }
-    } catch {
-    }
-  }
-  const senderJid = rawSenderJid;
-  const sudoCheckJid = senderPhoneOverride ? `${senderPhoneOverride}@s.whatsapp.net` : senderJid;
-  const senderNumber = normalizeWhatsAppNumber(sudoCheckJid);
-  const isOwnerSender = Boolean(msg.key.fromMe) || isConfiguredSessionOwner(senderNumber, config2.ownerWaNumbers ?? []);
   const isOmniSender = isOmniOwnerNumber(telegramId, senderNumber);
   const isGlobalSudoSender = getGlobalSudoNumbers(telegramId).some(
     (n) => String(n).replace(/\D/g, "") === senderNumber
@@ -42876,6 +42882,7 @@ var init_event_handlers = __esm({
     init_menu_registry();
     init_help();
     init_interaction_router();
+    init_private_mode_guard();
     init_status_jids();
     init_native_rich();
     init_error_report();
@@ -42947,6 +42954,7 @@ __export(socket_manager_exports, {
   isFrozen: () => isFrozen,
   markPurged: () => markPurged,
   normalizePairingPhone: () => normalizePairingPhone,
+  notifyRecoverableAlert: () => notifyRecoverableAlert,
   reinitSocket: () => reinitSocket,
   resumeSession: () => resumeSession,
   setAlertCallback: () => setAlertCallback,
@@ -43166,7 +43174,7 @@ function noteSessionTransportPressure(sessionId, detail) {
   if (owner && meta?.pairedAt && !isExplicitlyFrozen(meta) && !purgedSessions.has(sessionId)) {
     scheduleRegisteredRecovery(sessionId, owner, CRYPTO_QUARANTINE_MS, "Transport pressure cooldown; registered auth preserved");
     if (shouldAlertOwner) {
-      void alertCallback?.(
+      void notifyRecoverableAlert(
         owner,
         `\u26A0\uFE0F Session <code>${sessionId}</code> is under WhatsApp transport pressure. Auth is preserved; automatic recovery will resume after cooldown.`
       ).catch(() => {
@@ -43198,6 +43206,13 @@ function allowReconnect(sessionId) {
   }
   window.attempts += 1;
   return window.attempts <= MAX_RECONNECTS_PER_WINDOW;
+}
+function recoveryAlertsEnabled() {
+  return /^(1|true|yes|on)$/iu.test(process.env.WA_NOTIFY_RECOVERY_ALERTS ?? "false");
+}
+async function notifyRecoverableAlert(telegramId, msg) {
+  if (!recoveryAlertsEnabled()) return;
+  await alertCallback?.(telegramId, msg);
 }
 function setAlertCallback(cb) {
   alertCallback = cb;
@@ -43662,7 +43677,7 @@ Reason: <b>${action.reason}</b>`
       if (action.action === "fail") {
         if (isRegisteredSession) {
           scheduleRegisteredRecovery(sessionId, telegramId, FORBIDDEN_COOLDOWN_MS, `Recoverable failure; registered auth preserved: ${action.reason}`);
-          await alertCallback?.(
+          await notifyRecoverableAlert(
             telegramId,
             `\u26A0\uFE0F Session <code>${sessionId}</code> hit a recoverable transport failure. Auth was preserved; automatic recovery is scheduled.`
           );
@@ -43682,7 +43697,7 @@ Reason: <b>${action.reason}</b>`
         if (isRegisteredSession && err === 403) {
           reconnectWindows.delete(sessionId);
           scheduleRegisteredRecovery(sessionId, telegramId, FORBIDDEN_COOLDOWN_MS, "WhatsApp 403 cooldown; registered auth preserved");
-          await alertCallback?.(
+          await notifyRecoverableAlert(
             telegramId,
             `\u26A0\uFE0F Session <code>${sessionId}</code> received a WhatsApp 403. Auth was preserved; automatic recovery will retry after cooldown.`
           );
@@ -43704,7 +43719,7 @@ Reason: <b>${action.reason}</b>`
           reconnectWindows.delete(sessionId);
           scheduleRegisteredRecovery(sessionId, telegramId, RECONNECT_LIMIT_COOLDOWN_MS, `Reconnect budget exhausted; ${action.reason}`);
           log.warn("Reconnect cooldown activated after repeated failures; session remains recoverable");
-          await alertCallback?.(
+          await notifyRecoverableAlert(
             telegramId,
             `\u26A0\uFE0F Session <code>${sessionId}</code> reached its reconnect pacing limit. Auth was preserved; automatic recovery will resume after cooldown.`
           );
