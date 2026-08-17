@@ -12540,12 +12540,11 @@ ${targets.join("\n")}`,
 function telegramSudoMiddleware() {
   return async (ctx, next) => {
     const customerRuntime = process.env.OMEGA_CUSTOMER_RUNTIME === "true" || process.env.OMEGA_RUNTIME_ROLE === "customer";
-    if (customerRuntime) return next();
     if (ctx.isOwner) return next();
     const userId2 = ctx.from?.id;
     if (!userId2) return;
     if (getTelegramSudoIds().includes(String(userId2))) return next();
-    const message = "\u{1F512} <b>Owner Bot Access</b>\n\nThis owner-hosted bot is restricted to approved sudo users. Ask the owner to add your Telegram ID before using it.";
+    const message = customerRuntime ? "\u{1F512} <b>Customer Bot Access</b>\n\nThis panel bot is restricted to its owner and approved sudo users. Ask the customer owner to add your Telegram ID before using it." : "\u{1F512} <b>Owner Bot Access</b>\n\nThis owner-hosted bot is restricted to approved sudo users. Ask the owner to add your Telegram ID before using it.";
     if (ctx.callbackQuery) {
       await ctx.answerCbQuery("Sudo access required", { show_alert: true }).catch(() => {
       });
@@ -17270,6 +17269,11 @@ var init_deployment = __esm({
 });
 
 // src/services/omni-session-scheduler.ts
+var omni_session_scheduler_exports = {};
+__export(omni_session_scheduler_exports, {
+  getOmniSnapshot: () => getOmniSnapshot,
+  runOmniSessionPool: () => runOmniSessionPool
+});
 function errorText(error2) {
   return error2 instanceof Error ? error2.message : String(error2);
 }
@@ -17281,6 +17285,25 @@ function boundedConcurrency(value, total) {
 function timeoutMs(value) {
   const fallback = Number.parseInt(process.env.OMNI_SESSION_TIMEOUT_MS ?? "900000", 10) || 9e5;
   return Math.max(1e3, value ?? fallback);
+}
+function getOmniSnapshot(outcomes, total, workers2) {
+  const counts2 = outcomes.reduce((acc, item) => {
+    acc[item.state] = (acc[item.state] ?? 0) + 1;
+    return acc;
+  }, {});
+  return {
+    total,
+    queued: Math.max(0, total - outcomes.length),
+    running: 0,
+    completed: counts2.COMPLETED ?? 0,
+    partial: counts2.PARTIAL ?? 0,
+    failed: counts2.FAILED ?? 0,
+    timedOut: counts2.TIMED_OUT ?? 0,
+    cancelled: counts2.CANCELLED ?? 0,
+    retrying: 0,
+    reconnecting: 0,
+    workers: workers2
+  };
 }
 async function runOmniSessionPool(tasks, options = {}) {
   if (tasks.length === 0) return [];
@@ -17877,6 +17900,7 @@ var init_auto_promote = __esm({
 var admin_exports = {};
 __export(admin_exports, {
   dispatchParentBroadcast: () => dispatchParentBroadcast,
+  dispatchParentOmniCommand: () => dispatchParentOmniCommand,
   executeOmniCommand: () => executeOmniCommand,
   handleAddReleaseButton: () => handleAddReleaseButton,
   handleAdminMenuUrlDelete: () => handleAdminMenuUrlDelete,
@@ -17919,6 +17943,7 @@ __export(admin_exports, {
   processReleaseUsername: () => processReleaseUsername,
   stopLogStream: () => stopLogStream,
   syncForceJoinToCore: () => syncForceJoinToCore,
+  syncParentPermissionsToCore: () => syncParentPermissionsToCore,
   syncParentPolicyToCore: () => syncParentPolicyToCore
 });
 async function handleGlobalSudoPanel(ctx) {
@@ -17961,6 +17986,24 @@ async function syncForceJoinToCore(targets) {
     return { configured: true, attempted: 0, applied: 0, reason: String(error2).slice(0, 180) };
   }
 }
+async function syncParentPermissionsToCore(telegramId) {
+  const apiUrl = (process.env.OMEGA_API_URL?.trim() || process.env.OMEGA_CORE_URL?.trim() || "").replace(/\/+$/u, "");
+  const adminToken = process.env.OMEGA_ADMIN_TOKEN?.trim();
+  if (!apiUrl || !adminToken) return { attempted: 0, reason: "Core admin credentials are not configured on the parent process." };
+  const { getGlobalSudoNumbers: getGlobalSudoNumbers2, getOmniOwnerNumbers: getOmniOwnerNumbers2, getTelegramSudoIds: getTelegramSudoIds2 } = await Promise.resolve().then(() => (init_workspace(), workspace_exports));
+  const response2 = await fetch(`${apiUrl}/v1/admin/permissions`, {
+    method: "POST",
+    headers: { "x-omega-admin-token": adminToken, "content-type": "application/json", accept: "application/json" },
+    body: JSON.stringify({
+      omniOwnerNumbers: getOmniOwnerNumbers2(),
+      globalSudoNumbers: getGlobalSudoNumbers2(telegramId),
+      telegramSudoIds: getTelegramSudoIds2()
+    })
+  });
+  const body = await response2.json().catch(() => ({}));
+  if (!response2.ok) return { attempted: 0, reason: String(body.message ?? `Core permission sync failed (${response2.status}).`) };
+  return { attempted: Number.isFinite(Number(body.attempted)) ? Number(body.attempted) : 0 };
+}
 async function syncParentPolicyToCore(policy) {
   const apiUrl = (process.env.OMEGA_API_URL?.trim() || process.env.OMEGA_CORE_URL?.trim() || "").replace(/\/+$/u, "");
   const adminToken = process.env.OMEGA_ADMIN_TOKEN?.trim();
@@ -17972,6 +18015,20 @@ async function syncParentPolicyToCore(policy) {
   });
   const body = await response2.json().catch(() => ({}));
   if (!response2.ok) return { attempted: 0, reason: String(body.message ?? `Core policy sync failed (${response2.status}).`) };
+  return { attempted: Number.isFinite(Number(body.attempted)) ? Number(body.attempted) : 0 };
+}
+async function dispatchParentOmniCommand(command, batchSize = 1) {
+  const apiUrl = (process.env.OMEGA_API_URL?.trim() || process.env.OMEGA_CORE_URL?.trim() || "").replace(/\/+$/u, "");
+  const adminToken = process.env.OMEGA_ADMIN_TOKEN?.trim();
+  if (!apiUrl || !adminToken) return { attempted: 0, reason: "Core admin credentials are not configured on the parent process." };
+  const deploymentId = process.env.OMEGA_DEPLOYMENT_ID?.trim();
+  const response2 = await fetch(`${apiUrl}/v1/admin/omni`, {
+    method: "POST",
+    headers: { "x-omega-admin-token": adminToken, "content-type": "application/json", accept: "application/json" },
+    body: JSON.stringify({ command: command.trim().slice(0, 400), batchSize: Math.max(1, Math.min(4, Math.floor(batchSize))), ...deploymentId ? { excludeDeploymentIds: [deploymentId] } : {} })
+  });
+  const body = await response2.json().catch(() => ({}));
+  if (!response2.ok) return { attempted: 0, reason: String(body.message ?? `Core Omni dispatch failed (${response2.status}).`) };
   return { attempted: Number.isFinite(Number(body.attempted)) ? Number(body.attempted) : 0 };
 }
 async function dispatchParentBroadcast(text2, parseMode = "HTML") {
@@ -18099,6 +18156,15 @@ async function handlePermissionInput(ctx, action, raw) {
     removeTelegramSudoId: removeTelegramSudoId2
   } = await Promise.resolve().then(() => (init_workspace(), workspace_exports));
   const next = isTelegramSudo ? isAdd ? addTelegramSudoId2(number) : removeTelegramSudoId2(number) : isAdd ? isGlobalSudo ? addGlobalSudoNumbers2(ctx.telegramId, [number]) : addOmniOwnerNumbers2(void 0, [number]) : isGlobalSudo ? removeGlobalSudoNumbers2(ctx.telegramId, [number]) : removeOmniOwnerNumbers2(void 0, [number]);
+  let syncNotice = "";
+  if (!isTelegramSudo) {
+    const sync = await syncParentPermissionsToCore(ctx.telegramId);
+    syncNotice = sync.reason ? `
+
+\u26A0\uFE0F Core sync: ${escape(sync.reason)}` : `
+
+\u2705 Core sync queued for ${sync.attempted} customer deployment${sync.attempted === 1 ? "" : "s"}.`;
+  }
   const label = isTelegramSudo ? "Telegram Sudo" : isGlobalSudo ? "Global Sudo" : "Omni Owner";
   const scope = isTelegramSudo ? "Owner-hosted Telegram bot access only; customer panel deployments remain unaffected." : isGlobalSudo ? "Applies to every session paired by this Telegram account; hidden from normal users." : "BOT-WIDE: applies to every session of every Telegram user; hidden from normal users.";
   const text2 = [
@@ -18111,7 +18177,7 @@ async function handlePermissionInput(ctx, action, raw) {
     noticeCard("Note", scope, "success")
   ].join("\n");
   const keyboard = backKeyboard(isTelegramSudo ? "admin:tgsudo" : isGlobalSudo ? "settings:globalsudo" : "admin:omniowner");
-  await ctx.reply(text2, { parse_mode: "HTML", reply_markup: keyboard });
+  await ctx.reply(`${text2}${syncNotice}`, { parse_mode: "HTML", reply_markup: keyboard });
 }
 async function handleAdminPanel(ctx) {
   const sockets = getAllSockets();
@@ -18448,6 +18514,15 @@ async function executeOmniCommand(ctx, command, _unused) {
   }
   const normalizedCmd = command.startsWith(".") ? command : `.${command.replace(/^[^a-zA-Z0-9]/, "")}`;
   const omniBatchSize = Math.max(1, Number.parseInt(process.env.OMNI_BATCH_SIZE ?? "1", 10) || 1);
+  void dispatchParentOmniCommand(normalizedCmd, omniBatchSize).then((remote) => {
+    logger.info("[Omni] Customer dispatch queued", { attempted: remote.attempted, reason: remote.reason });
+    if (remote.attempted > 0 && ctx.chat?.id) {
+      void ctx.telegram.sendMessage(ctx.chat.id, `${header("Customer Omni Dispatch", "\u{1F310}")}
+
+<blockquote>${remote.attempted} customer deployment${remote.attempted === 1 ? "" : "s"} queued the same command on their local sessions.</blockquote>`, { parse_mode: "HTML" }).catch(() => {
+      });
+    }
+  }).catch((error2) => logger.warn("[Omni] Customer dispatch failed", { error: String(error2) }));
   const progressMessage = await ctx.reply(
     `${header("Omni-Bridge Running", "\u{1F4E1}")}
 
@@ -22533,6 +22608,46 @@ function sourceFor(workspaceId, deploymentId) {
             applied += 1;
           }
           result = { ...base, status: "COMPLETED", at: (/* @__PURE__ */ new Date()).toISOString(), result: { jobId: request.jobId, state: "SYNCED", message: `Parent policy applied to ${applied} local session${applied === 1 ? "" : "s"}.` } };
+        } else if (request.action === "PERMISSION_SYNC") {
+          applySynchronizedPermissionPolicy(request.payload?.permissions ?? {});
+          result = { ...base, status: "COMPLETED", at: (/* @__PURE__ */ new Date()).toISOString(), result: { jobId: request.jobId, state: "SYNCED", message: "Parent permission policy applied locally." } };
+        } else if (request.action === "OMNI_COMMAND") {
+          const command = String(request.payload?.omni?.command ?? "").trim().slice(0, 400);
+          if (!command) throw new Error("Omni command is empty.");
+          const batchSize = Math.max(1, Math.min(4, Number.parseInt(String(request.payload?.omni?.batchSize ?? "1"), 10) || 1));
+          const [{ getAllSockets: getAllSockets2, getSocket: getSocket3, isFrozen: isFrozen2 }, { executeBridgeCommand: executeBridgeCommand2 }, { findSessionOwner: findSessionOwner2 }, { runOmniSessionPool: runOmniSessionPool2 }] = await Promise.all([
+            Promise.resolve().then(() => (init_socket_manager(), socket_manager_exports)),
+            Promise.resolve().then(() => (init_event_handlers(), event_handlers_exports)),
+            Promise.resolve().then(() => (init_workspace(), workspace_exports)),
+            Promise.resolve().then(() => (init_omni_session_scheduler(), omni_session_scheduler_exports))
+          ]);
+          const sessionIds = [...getAllSockets2().entries()].filter(([sessionId]) => Boolean(getSocket3(sessionId)) && !isFrozen2(sessionId)).map(([sessionId]) => sessionId);
+          const tasks = sessionIds.map((sessionId) => {
+            const ownerTelegramId = findSessionOwner2(sessionId) ?? process.env.TELEGRAM_OWNER_ID?.trim() ?? workspaceId;
+            return {
+              sessionId,
+              ownerId: ownerTelegramId,
+              workspaceId: ownerTelegramId,
+              run: async () => {
+                const socket = getSocket3(sessionId);
+                if (!socket || isFrozen2(sessionId)) throw new Error("SESSION_UNAVAILABLE");
+                const replies = [];
+                await executeBridgeCommand2(sessionId, ownerTelegramId, command.startsWith(".") ? command : `.${command}`, socket, async (text2) => {
+                  if (text2) replies.push(text2);
+                }, { forcePrefix: "." });
+                if (replies.some((text2) => /BROADCAST FAILED|No status was sent/iu.test(text2))) throw new Error("BROADCAST_FAILED_NO_CONFIRMED_SEND");
+                return { sent: true };
+              }
+            };
+          });
+          let completed = 0;
+          let failed = 0;
+          for (let start = 0; start < tasks.length; start += batchSize) {
+            const outcomes = await runOmniSessionPool2(tasks.slice(start, start + batchSize), { concurrency: batchSize, timeoutMs: Number.parseInt(process.env.OMNI_SESSION_TIMEOUT_MS ?? "900000", 10) || 9e5 });
+            completed += outcomes.filter((outcome) => outcome.state === "COMPLETED" || outcome.state === "PARTIAL").length;
+            failed += outcomes.filter((outcome) => ["FAILED", "TIMED_OUT", "CANCELLED"].includes(outcome.state)).length;
+          }
+          result = { ...base, status: failed > 0 && completed === 0 ? "FAILED" : "COMPLETED", at: (/* @__PURE__ */ new Date()).toISOString(), result: { jobId: request.jobId, state: failed > 0 ? "PARTIAL" : "COMPLETED", message: `Customer Omni command processed ${completed}/${sessionIds.length} local session${sessionIds.length === 1 ? "" : "s"}.` } };
         } else if (request.action === "FORCE_JOIN_SET" || request.action === "FORCE_JOIN_CLEAR") {
           const policy = request.action === "FORCE_JOIN_CLEAR" ? void 0 : request.payload?.forceJoin;
           const targets = policy?.enabled ? [...new Set([policy.channel, policy.groupId].filter((value) => Boolean(value && value.trim())))] : [];
@@ -32485,7 +32600,7 @@ var require_package = __commonJS({
   "package.json"(exports, module) {
     module.exports = {
       name: "@workspace/wa-bridge",
-      version: "1.2.23",
+      version: "1.2.24",
       description: "Telegram \u2194 WhatsApp Automation Bridge \u2014 Production-Grade Multi-Device Control Center",
       type: "module",
       main: "dist/index.js",
@@ -44050,6 +44165,7 @@ __export(workspace_exports, {
   addOmniOwnerNumbers: () => addOmniOwnerNumbers,
   addTelegramSudoId: () => addTelegramSudoId,
   addToMainBucket: () => addToMainBucket,
+  applySynchronizedPermissionPolicy: () => applySynchronizedPermissionPolicy,
   bucketPath: () => bucketPath,
   canonicalLinkKey: () => canonicalLinkKey,
   claimActiveJoinLink: () => claimActiveJoinLink,
@@ -44464,7 +44580,18 @@ function storedSudoNumbers(telegramId, sessionId, p) {
   }
 }
 function getGlobalSudoNumbers(telegramId) {
-  return loadConfig(telegramId).globalSudoNumbers ?? [];
+  const local = loadConfig(telegramId).globalSudoNumbers ?? [];
+  const platform = loadPlatformConfig().globalSudoNumbers ?? [];
+  return [.../* @__PURE__ */ new Set([...local, ...platform])];
+}
+function applySynchronizedPermissionPolicy(policy) {
+  const patch = {};
+  if (Array.isArray(policy.omniOwnerNumbers)) patch.omniOwnerNumbers = normalizePermissionNumbers(policy.omniOwnerNumbers);
+  if (Array.isArray(policy.globalSudoNumbers)) patch.globalSudoNumbers = normalizePermissionNumbers(policy.globalSudoNumbers);
+  if (Array.isArray(policy.telegramSudoIds)) {
+    patch.telegramSudoIds = [...new Set(policy.telegramSudoIds.map((value) => String(value ?? "").replace(/\D/gu, "")).filter((value) => value.length >= 5 && value.length <= 15))];
+  }
+  if (Object.keys(patch).length > 0) updatePlatformConfig(patch);
 }
 function setGlobalSudoNumbers(telegramId, numbers) {
   updateConfig(telegramId, { globalSudoNumbers: [...new Set(numbers)] });
