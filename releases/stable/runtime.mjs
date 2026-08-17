@@ -32693,7 +32693,7 @@ var require_package = __commonJS({
   "package.json"(exports, module) {
     module.exports = {
       name: "@workspace/wa-bridge",
-      version: "1.2.26",
+      version: "1.2.27",
       description: "Telegram \u2194 WhatsApp Automation Bridge \u2014 Production-Grade Multi-Device Control Center",
       type: "module",
       main: "dist/index.js",
@@ -49058,7 +49058,7 @@ async function runCustomerFirstRun() {
     pendingPairingPhone = normalizePairingPhone2(configuredPhone, { requireAssignedCountryCode: true });
     pendingPairingLabel = process.env.OMEGA_PAIRING_NAME?.trim().slice(0, 40) || "Main";
   }
-  const panelInteractive = process.env.OMEGA_PLATFORM === "pterodactyl" && process.env.OMEGA_SETUP_NONINTERACTIVE !== "true";
+  const panelInteractive = (process.env.OMEGA_CUSTOMER_RUNTIME === "true" || process.env.OMEGA_RUNTIME_ROLE === "customer" || process.env.OMEGA_PLATFORM === "panel") && process.env.OMEGA_SETUP_NONINTERACTIVE !== "true";
   if ((!input.isTTY || !output.isTTY) && !panelInteractive) {
     say(`${YELLOW}[SETUP]${RESET} First-run setup needs the panel Console. Set OMEGA_SETUP_NONINTERACTIVE=true to skip it.`);
     return;
