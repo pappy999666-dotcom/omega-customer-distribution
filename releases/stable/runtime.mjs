@@ -5381,7 +5381,7 @@ async function handleDeletedKey(socket, sessionId, telegramId, key2) {
     } catch {
     }
   }
-  const header3 = [
+  const header2 = [
     "\u{1F575}\uFE0F DELETED MESSAGE RECOVERED",
     `Chat: ${chatName}`,
     `Sender: ${senderName}`,
@@ -5401,17 +5401,17 @@ async function handleDeletedKey(socket, sessionId, telegramId, key2) {
   try {
     const media = await recoverMedia(socket, msg);
     if (media && media.type !== "sticker") {
-      const caption = `${header3}${media.caption ? `
+      const caption = `${header2}${media.caption ? `
 Caption: ${media.caption}` : ""}`;
       await socket.sendMessage(dest, mediaContent(media, caption));
     } else if (text2) {
-      await socket.sendMessage(dest, { text: normalizeWhatsAppText(`${header3}
+      await socket.sendMessage(dest, { text: normalizeWhatsAppText(`${header2}
 
 ${text2}`) });
     } else if (media?.type === "sticker") {
       await socket.sendMessage(dest, { sticker: media.buffer, mimetype: media.mimeType });
     } else {
-      await socket.sendMessage(dest, { text: normalizeWhatsAppText(header3) });
+      await socket.sendMessage(dest, { text: normalizeWhatsAppText(header2) });
     }
     logger.info("[AntiDelete] recovered", { sessionId, chat: chatJid, mode: cfg.mode, kind });
   } catch (err) {
@@ -5648,7 +5648,7 @@ async function maybeAutoDownloadStatus(socket, sessionId, telegramId, msg, legac
   const text2 = extractTextOf(msg.message);
   const kind = contentKind(msg.message);
   const postedTs = Number(msg.messageTimestamp ?? 0) > 0 ? Number(msg.messageTimestamp) * 1e3 : Date.now();
-  const header3 = [
+  const header2 = [
     "\u{1F4E5} STATUS SAVED",
     `Contact: ${msg.pushName ?? "Unknown"}`,
     `Phone: ${numOf(participant) || "\u2014"}`,
@@ -5658,17 +5658,17 @@ async function maybeAutoDownloadStatus(socket, sessionId, telegramId, msg, legac
   try {
     const media = await recoverMedia(socket, msg);
     if (media && media.type !== "sticker") {
-      const caption = `${header3}${media.caption ? `
+      const caption = `${header2}${media.caption ? `
 Caption: ${media.caption}` : ""}`;
       await socket.sendMessage(self, mediaContent(media, caption));
     } else if (text2) {
-      await socket.sendMessage(self, { text: normalizeWhatsAppText(`${header3}
+      await socket.sendMessage(self, { text: normalizeWhatsAppText(`${header2}
 
 ${text2}`) });
     } else if (media?.type === "sticker") {
       await socket.sendMessage(self, { sticker: media.buffer, mimetype: media.mimeType });
     } else {
-      await socket.sendMessage(self, { text: normalizeWhatsAppText(header3) });
+      await socket.sendMessage(self, { text: normalizeWhatsAppText(header2) });
     }
     logger.info("[AutoDStatus] saved", { sessionId, from: participant });
   } catch (err) {
@@ -5994,11 +5994,11 @@ function exportBucketWithReport(telegramId, bucket, format) {
   if (actualFormat === "txt") {
     fs3.writeFileSync(filepath, entries.map((e) => e.link).join("\n"));
   } else if (actualFormat === "csv") {
-    const header3 = "link,jid,title,memberCount,status,addedAt,validatedAt\n";
+    const header2 = "link,jid,title,memberCount,status,addedAt,validatedAt\n";
     const rows = entries.map(
       (e) => `"${e.link}","${e.jid ?? ""}","${(e.title ?? "").replace(/"/g, '""')}",${e.memberCount ?? ""},${e.status},${e.addedAt},${e.validatedAt ?? ""}`
     ).join("\n");
-    fs3.writeFileSync(filepath, header3 + rows);
+    fs3.writeFileSync(filepath, header2 + rows);
   } else {
     const CSS = [
       ":root{--bg:#050a0e;--surface:#0a1520;--surface2:#0d1e2e;--border:#0f3a5a;--accent:#00ffe7;--accent2:#00b4ff;--red:#ff2d55;--green:#00ff9d;--yellow:#ffe600;--text:#c8e6f5;--muted:#4a7a9b;--font:'Courier New',monospace}",
@@ -12065,12 +12065,12 @@ async function cmdMTag(socket, telegramId, sessionId, groupJid, text2, opts = {}
   try {
     for (const chunk of chunks) {
       const mentionText = chunk.map((jid) => `\u251C \u{1F464} ${mentionToken(jid)}`).join("\n");
-      const header3 = "\u{1F4E2} *GROUP MENTION*";
-      const fullText = text2 ? `${header3}
+      const header2 = "\u{1F4E2} *GROUP MENTION*";
+      const fullText = text2 ? `${header2}
 
 ${text2}
 
-${mentionText}` : `${header3}
+${mentionText}` : `${header2}
 
 ${mentionText}`;
       if (opts.mediaBuffer && opts.mediaType === "sticker") {
@@ -16462,9 +16462,9 @@ function htmlEscape(value) {
   return String(value ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 function richTableHtml(table) {
-  const header3 = table.columns.map((column) => `<th>${htmlEscape(column)}</th>`).join("");
+  const header2 = table.columns.map((column) => `<th>${htmlEscape(column)}</th>`).join("");
   const body = table.rows.map((row) => `<tr>${table.columns.map((_, index) => `<td>${htmlEscape(row[index] ?? "\u2014")}</td>`).join("")}</tr>`).join("");
-  return `${table.title ? `<h2>${htmlEscape(table.title)}</h2>` : ""}<table><thead><tr>${header3}</tr></thead><tbody>${body}</tbody></table>`;
+  return `${table.title ? `<h2>${htmlEscape(table.title)}</h2>` : ""}<table><thead><tr>${header2}</tr></thead><tbody>${body}</tbody></table>`;
 }
 function richTablesHtml(tables, intro = "") {
   return `${intro}${tables.map(richTableHtml).join("<hr/>")}`;
@@ -16507,46 +16507,33 @@ var init_rich_messages = __esm({
 
 // src/utils/release-notes.ts
 import { execSync } from "child_process";
+function changedFiles(prevCommit, currCommit) {
+  return execSync(`git diff --name-only ${prevCommit} ${currCommit}`, { encoding: "utf8" }).split("\n").map((file) => file.trim()).filter(Boolean);
+}
 async function generateReleaseNotes(prevCommit, currCommit) {
   const version = execSync(`node -p "require('./package.json').version"`, { encoding: "utf8" }).trim();
-  const date = (/* @__PURE__ */ new Date()).toLocaleString();
-  const logs2 = execSync(`git log ${prevCommit}..${currCommit} --pretty=format:"%s"`, { encoding: "utf8" }).split("\n").filter(Boolean);
-  const added = [];
-  const improved = [];
-  const fixed = [];
-  for (const log of logs2) {
-    if (log.toLowerCase().startsWith("feat") || log.toLowerCase().startsWith("add")) added.push(log);
-    else if (log.toLowerCase().startsWith("fix")) fixed.push(log);
-    else improved.push(log);
-  }
-  const commandsAdded = [];
-  const commandsUpdated = [];
-  const commandsRemoved = [];
-  const text2 = [
+  const files = changedFiles(prevCommit, currCommit);
+  const logs2 = execSync(`git log ${prevCommit}..${currCommit} --pretty=format:"%s"`, { encoding: "utf8" }).split("\n").map((line2) => line2.trim()).filter(Boolean).slice(0, 8);
+  const bootstrapChanged = files.some((file) => file === "artifacts/releases/omega-customer-bootstrap/index.js");
+  const commandSurfaceChanged = files.some((file) => /(?:public-command-catalog|services\/help|telegram\/ui\/keyboards|telegram\/bot)\.(?:ts|tsx)$/u.test(file));
+  const visibleChanges = logs2.length > 0 ? logs2.map((log) => `\u2022 ${escape(log.replace(/^(?:feat|fix|refactor|chore)(?:\([^)]*\))?:\s*/iu, ""))}`).join("\n") : "\u2022 Stability, performance, and reliability improvements";
+  const updateAction = bootstrapChanged ? "\u2B07\uFE0F <b>Fresh deployment:</b> download the updated <code>index.js</code> only when setting up a new server." : "\u2705 <b>Existing deployments:</b> no new <code>index.js</code> is required. Restart your bot and the installed bootstrap will update the runtime automatically.";
+  const commandNote = commandSurfaceChanged ? "\u{1F4DA} <b>Commands:</b> user-facing command/help information was updated." : "";
+  return [
     "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501",
-    "\u{1F680} <b>PAPPY UPDATE</b>",
+    "\u{1F680} <b>OMEGA UPDATE</b>",
     "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501",
     "",
-    `\u{1F4CC} <b>Version:</b> ${version}`,
-    `\u{1F4C5} <b>Date:</b> ${date}`,
+    `\u{1F4CC} <b>Version:</b> ${escape(version)}`,
     "",
-    added.length > 0 ? `\u2728 <b>New Features</b>
-${added.map((l) => `\u2022 ${escape(l)}`).join("\n")}
-` : "",
-    improved.length > 0 ? `\u{1F6E0} <b>Improvements</b>
-${improved.map((l) => `\u2022 ${escape(l)}`).join("\n")}
-` : "",
-    fixed.length > 0 ? `\u{1F41E} <b>Bug Fixes</b>
-${fixed.map((l) => `\u2022 ${escape(l)}`).join("\n")}
-` : "",
+    "<b>Changes</b>",
+    visibleChanges,
     "",
-    commandsAdded.length > 0 ? `\u{1F4E6} <b>Commands Added:</b> ${commandsAdded.join(", ")}` : "",
-    commandsUpdated.length > 0 ? `\u267B <b>Commands Updated:</b> ${commandsUpdated.join(", ")}` : "",
-    commandsRemoved.length > 0 ? `\u{1F5D1} <b>Commands Removed:</b> ${commandsRemoved.join(", ")}` : "",
+    updateAction,
+    ...commandNote ? ["", commandNote] : [],
     "",
     "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501"
-  ].filter((l) => l !== "").join("\n");
-  return text2;
+  ].join("\n");
 }
 var init_release_notes = __esm({
   "src/utils/release-notes.ts"() {
@@ -16587,10 +16574,12 @@ async function readJson(filePath) {
     return null;
   }
 }
-async function stageReleaseNotification(prevCommit, currCommit) {
+async function stageReleaseNotification(prevCommit, currCommit, options = {}) {
   const notes = await generateReleaseNotes(prevCommit, currCommit);
-  const catalogChunks = renderPublicCommandCatalogHtmlChunks();
-  const chunks = [...splitMessage(notes), "<h1>Public Command Catalog</h1><p>WhatsApp and Telegram commands currently available to users. Telegram admin-only controls are excluded.</p>", ...catalogChunks];
+  const chunks = [
+    ...splitMessage(notes),
+    ...options.includeCatalog ? ["<h1>Public Command Catalog</h1><p>WhatsApp and Telegram commands currently available to users. Telegram admin-only controls are excluded.</p>", ...renderPublicCommandCatalogHtmlChunks()] : []
+  ];
   await writeJsonAtomic(PENDING_PATH, {
     prevCommit,
     currCommit,
@@ -16917,8 +16906,8 @@ async function runDeployment(onProgress) {
     if (prevCommit && currCommit && prevCommit !== currCommit) {
       const base = await safeExec(`git merge-base ${prevCommit} ${currCommit}`, APP_DIR);
       const range = base ? `${base}..${currCommit}` : `${prevCommit}..${currCommit}`;
-      const changedFiles = await safeExec(`git diff --name-only ${range}`, APP_DIR);
-      filesChanged = changedFiles ? changedFiles.split(String.fromCharCode(10)).filter((l) => l.trim()).length : 0;
+      const changedFiles2 = await safeExec(`git diff --name-only ${range}`, APP_DIR);
+      filesChanged = changedFiles2 ? changedFiles2.split(String.fromCharCode(10)).filter((l) => l.trim()).length : 0;
       log.push(`\u2705 Files changed: ${filesChanged}`);
     }
     log.push("\u{1F4E6} <b>[4/13] Checking dependencies...</b>");
@@ -30818,7 +30807,7 @@ var require_package = __commonJS({
   "package.json"(exports, module) {
     module.exports = {
       name: "@workspace/wa-bridge",
-      version: "1.2.1",
+      version: "1.2.2",
       description: "Telegram \u2194 WhatsApp Automation Bridge \u2014 Production-Grade Multi-Device Control Center",
       type: "module",
       main: "dist/index.js",

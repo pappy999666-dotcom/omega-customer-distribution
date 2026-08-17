@@ -1,4 +1,4 @@
-# Omega Customer Bot 1.2.1
+# Omega Customer Bot 1.2.2
 
 This repository publishes the source-protected Omega customer runtime. Customers deploy with one file: the root `index.js` bootstrap. It downloads the verified stable runtime, installs production dependencies, preserves the previous working release when an update fails, and starts the local bot.
 
@@ -50,7 +50,7 @@ A process manager such as PM2 may be used to keep the process online. Keep the t
 
 ## Automatic updates
 
-The uploaded `index.js` is the bootstrap key. With automatic updates enabled, restarting the server checks the stable GitHub manifest, verifies SHA-256 hashes, stages the new runtime safely, and keeps the previous working release if an update fails. Customers normally do not need to download another file for future stable updates.
+The uploaded `index.js` is the bootstrap key. With automatic updates enabled, restarting the server checks the stable GitHub manifest, verifies SHA-256 hashes, stages the new runtime safely, and keeps the previous working release if an update fails. Customers do not need to download another file for future stable updates. Keep the original bootstrap `index.js`; restart the server and it will fetch, verify, install, and activate the newest runtime automatically.
 
 For resource recommendations and troubleshooting, use the accompanying `CUSTOMER_QUICKSTART.md` guide supplied by the operator.
 
