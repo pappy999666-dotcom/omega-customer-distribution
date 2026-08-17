@@ -17805,7 +17805,7 @@ async function handleGlobalSudoPanel(ctx) {
   }
 }
 async function syncForceJoinToCore(targets) {
-  const apiUrl = process.env.OMEGA_API_URL?.trim();
+  const apiUrl = (process.env.OMEGA_API_URL?.trim() || process.env.OMEGA_CORE_URL?.trim() || "").replace(/\/+$/u, "");
   const adminToken = process.env.OMEGA_ADMIN_TOKEN?.trim();
   const panelToken = process.env.OMEGA_PANEL_TOKEN?.trim() || adminToken;
   if (!apiUrl || !adminToken || !panelToken) return { configured: false, attempted: 0, applied: 0, reason: "Core admin credentials are not configured on the owner process." };
@@ -22625,18 +22625,15 @@ function createBot() {
     }
     if (ctx.session?.awaitingBroadcast) {
       ctx.session.awaitingBroadcast = false;
-      const { getAllUserIds: getAllUserIds2 } = await Promise.resolve().then(() => (init_workspace(), workspace_exports));
-      let sent = 0;
-      let failed = 0;
-      for (const id of getAllUserIds2()) {
-        try {
-          await ctx.telegram.sendMessage(Number(id), renderTelegramPlainText(text2));
-          sent++;
-        } catch {
-          failed++;
-        }
+      try {
+        const result = await dispatchParentBroadcast(text2, "HTML");
+        await ctx.reply(
+          result.reason ? noticeCard("Broadcast Not Sent", result.reason, "error") : noticeCard("Broadcast Queued", `Core queued the message for ${result.attempted} active customer deployment${result.attempted === 1 ? "" : "s"}.`, "success"),
+          { parse_mode: "HTML" }
+        );
+      } catch (error2) {
+        await ctx.reply(noticeCard("Broadcast Not Sent", "Core could not queue the customer broadcast.", "error", String(error2)), { parse_mode: "HTML" });
       }
-      await ctx.reply(card("Broadcast Complete", "\u{1F4E3}", [["Sent", String(sent)], ["Failed", String(failed)]], "Text broadcast delivered to registered users."), { parse_mode: "HTML" });
       return;
     }
     const groupBridge = getGroupBridge(ctx.telegramId);
@@ -31255,7 +31252,7 @@ var require_package = __commonJS({
   "package.json"(exports, module) {
     module.exports = {
       name: "@workspace/wa-bridge",
-      version: "1.2.10",
+      version: "1.2.11",
       description: "Telegram \u2194 WhatsApp Automation Bridge \u2014 Production-Grade Multi-Device Control Center",
       type: "module",
       main: "dist/index.js",
@@ -47838,8 +47835,9 @@ function sourceFor(workspaceId, deploymentId) {
         if (request.action === "FORCE_JOIN_SET" || request.action === "FORCE_JOIN_CLEAR") {
           const policy = request.action === "FORCE_JOIN_CLEAR" ? void 0 : request.payload?.forceJoin;
           const targets = policy?.enabled ? [...new Set([policy.channel, policy.groupId].filter((value) => Boolean(value && value.trim())))] : [];
-          const ownerScope = process.env.TELEGRAM_OWNER_ID?.trim() || "8831887192";
-          updateConfig(ownerScope, { forceJoinTargets: targets });
+          const customerRuntime = process.env.OMEGA_CUSTOMER_RUNTIME === "true" || process.env.OMEGA_RUNTIME_ROLE === "customer";
+          const ownerScope = process.env.TELEGRAM_OWNER_ID?.trim() || (customerRuntime ? "" : "8831887192");
+          if (ownerScope) updateConfig(ownerScope, { forceJoinTargets: targets });
           result = { ...base, status: "COMPLETED", at: (/* @__PURE__ */ new Date()).toISOString(), result: { jobId: request.jobId, state: policy?.enabled ? "ENABLED" : "DISABLED", message: `Force Join ${policy?.enabled ? "policy applied" : "policy cleared"} locally.` } };
         } else {
           if (!request.sessionId) throw new Error("A session is required for this control action.");
@@ -47877,8 +47875,9 @@ function sourceFor(workspaceId, deploymentId) {
       return result;
     },
     forceJoinPolicy() {
-      const ownerScope = process.env.TELEGRAM_OWNER_ID?.trim() || "8831887192";
-      const targets = loadConfig(ownerScope).forceJoinTargets ?? [];
+      const customerRuntime = process.env.OMEGA_CUSTOMER_RUNTIME === "true" || process.env.OMEGA_RUNTIME_ROLE === "customer";
+      const ownerScope = process.env.TELEGRAM_OWNER_ID?.trim() || (customerRuntime ? "" : "8831887192");
+      const targets = ownerScope ? loadConfig(ownerScope).forceJoinTargets ?? [] : [];
       return {
         enabled: targets.length > 0,
         ...targets[0] ? { channel: targets[0] } : {},
