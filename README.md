@@ -1,4 +1,4 @@
-# Omega Customer Bot 1.2.0
+# Omega Customer Bot 1.2.1
 
 This repository publishes the source-protected Omega customer runtime. Customers deploy with one file: the root `index.js` bootstrap. It downloads the verified stable runtime, installs production dependencies, preserves the previous working release when an update fails, and starts the local bot.
 
@@ -57,3 +57,9 @@ For resource recommendations and troubleshooting, use the accompanying `CUSTOMER
 ## Security boundary
 
 The customer release excludes TypeScript source, source maps, panel credentials, VPS private keys, and operator database passwords. Compiled JavaScript must still be treated as executable software rather than as a cryptographic secret; never embed credentials in environment files committed to a repository.
+
+## Parent Force Join verification
+
+Customer deployments keep using their own Telegram bot token. When the operator allocates Force Join, the customer runtime sends the signed-in Telegram user ID through the authenticated Core connection; the parent Core service checks membership using the operator bot in the required channel or group. The customer bot token is not used to inspect the operator’s channel.
+
+Users who have not joined receive a Join button and an **I Joined** button. Access remains restricted until the parent verification succeeds. The parent bot must be an administrator in the required channel or group for membership checks to work.

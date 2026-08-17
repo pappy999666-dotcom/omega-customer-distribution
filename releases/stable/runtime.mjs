@@ -4246,7 +4246,7 @@ function unwrapMessage(raw) {
   let viewOnce = false;
   let ephemeral = false;
   let forwarded = false;
-  const path33 = [];
+  const path34 = [];
   const seen2 = /* @__PURE__ */ new Set();
   const MAX_DEPTH = 16;
   for (let i = 0; i < MAX_DEPTH; i++) {
@@ -4258,13 +4258,13 @@ function unwrapMessage(raw) {
     if (VIEW_ONCE_KEYS.includes(key2)) viewOnce = true;
     if (EPHEMERAL_KEYS.includes(key2)) ephemeral = true;
     if (FORWARD_KEYS.includes(key2)) forwarded = true;
-    path33.push(key2);
+    path34.push(key2);
     const node = current[key2];
     current = node?.message ?? node;
   }
   const mediaNode = current?.imageMessage ?? current?.videoMessage ?? current?.audioMessage ?? current?.stickerMessage ?? current?.documentMessage;
   if (mediaNode?.viewOnce === true || current?.viewOnce === true) viewOnce = true;
-  return { inner: current, viewOnce, ephemeral, forwarded, path: path33 };
+  return { inner: current, viewOnce, ephemeral, forwarded, path: path34 };
 }
 var WRAPPER_KEYS, VIEW_ONCE_KEYS, EPHEMERAL_KEYS, FORWARD_KEYS;
 var init_MessageUnwrapper = __esm({
@@ -12192,6 +12192,94 @@ var init_broadcast_control = __esm({
   }
 });
 
+// src/services/force-join-verifier.ts
+import fs5 from "node:fs";
+import path5 from "node:path";
+function installationFilePath() {
+  const root = process.env.OMEGA_WORKSPACE_ROOT?.trim() || process.env.OMEGA_DATA_DIR?.trim() || path5.join(process.cwd(), "workspace");
+  return path5.resolve(process.env.OMEGA_INSTALLATION_FILE?.trim() || path5.join(root, "installation.json"));
+}
+function readClientToken() {
+  const configured2 = process.env.OMEGA_CLIENT_TOKEN?.trim();
+  if (configured2) return configured2;
+  try {
+    const value = JSON.parse(fs5.readFileSync(installationFilePath(), "utf8"));
+    return typeof value.clientToken === "string" && value.clientToken.trim() ? value.clientToken.trim() : void 0;
+  } catch {
+    return void 0;
+  }
+}
+function remember3(userId2, result) {
+  if (cache.size >= MAX_CACHE_ENTRIES) {
+    const oldest = cache.keys().next().value;
+    if (typeof oldest === "string") cache.delete(oldest);
+  }
+  cache.set(userId2, { expiresAt: Date.now() + CACHE_TTL_MS2, result });
+  return result;
+}
+async function requestVerification(userId2) {
+  const apiUrl = (process.env.OMEGA_API_URL?.trim() || process.env.OMEGA_CORE_URL?.trim() || "").replace(/\/+$/u, "");
+  if (!apiUrl) return { enabled: false, allowed: true };
+  const token2 = readClientToken();
+  if (!token2) return { enabled: true, allowed: false, unavailable: true, reason: "Core client authorization is not ready." };
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 5e3);
+  timeout.unref?.();
+  try {
+    const response2 = await fetch(`${apiUrl}/v1/agent/force-join/check`, {
+      method: "POST",
+      headers: {
+        accept: "application/json",
+        authorization: `Bearer ${token2}`,
+        "content-type": "application/json"
+      },
+      body: JSON.stringify({ userId: userId2 }),
+      signal: controller.signal
+    });
+    const raw = await response2.text();
+    let body = {};
+    try {
+      body = JSON.parse(raw);
+    } catch {
+    }
+    if (!response2.ok) {
+      return { enabled: true, allowed: false, unavailable: true, reason: body.message || `Core verification failed (${response2.status}).` };
+    }
+    if (body.enabled !== true) return { enabled: false, allowed: true };
+    return {
+      enabled: true,
+      allowed: body.allowed === true,
+      ...Array.isArray(body.missingTargets) ? { missingTargets: body.missingTargets.filter((target) => typeof target === "string").slice(0, 8) } : {},
+      ...body.reason ? { reason: String(body.reason).slice(0, 180) } : {}
+    };
+  } catch (error2) {
+    return { enabled: true, allowed: false, unavailable: true, reason: error2 instanceof Error ? error2.message.slice(0, 180) : "Core verification unavailable." };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+async function verifyCustomerForceJoin(userId2) {
+  const key2 = String(userId2);
+  const cached = cache.get(key2);
+  if (cached && cached.expiresAt > Date.now()) return cached.result;
+  cache.delete(key2);
+  const existing = inflight2.get(key2);
+  if (existing) return existing;
+  const promise = requestVerification(key2).then((result) => remember3(key2, result)).finally(() => inflight2.delete(key2));
+  inflight2.set(key2, promise);
+  return promise;
+}
+var CACHE_TTL_MS2, MAX_CACHE_ENTRIES, cache, inflight2;
+var init_force_join_verifier = __esm({
+  "src/services/force-join-verifier.ts"() {
+    "use strict";
+    CACHE_TTL_MS2 = 15e3;
+    MAX_CACHE_ENTRIES = 5e3;
+    cache = /* @__PURE__ */ new Map();
+    inflight2 = /* @__PURE__ */ new Map();
+  }
+});
+
 // src/telegram/middlewares/auth.ts
 function setMaintenanceMode(enabled) {
   maintenanceMode = enabled;
@@ -12242,49 +12330,54 @@ function authMiddleware() {
 }
 function forceJoinMiddleware() {
   return async (ctx, next) => {
+    const customerRuntime = process.env.OMEGA_CUSTOMER_RUNTIME === "true" || process.env.OMEGA_RUNTIME_ROLE === "customer";
     const ownerId = process.env.TELEGRAM_OWNER_ID?.trim() || "8831887192";
     const ownerConfigTargets = loadConfig(ownerId).forceJoinTargets ?? [];
     const envTargets = (process.env.TELEGRAM_SPONSOR_CHANNELS ?? process.env.TELEGRAM_SPONSOR_CHANNEL ?? "").split(",").map((target) => target.trim()).filter(Boolean);
-    const sponsorChannels = [.../* @__PURE__ */ new Set([...ownerConfigTargets, ...envTargets])];
-    if (sponsorChannels.length === 0) return next();
+    const localTargets = [.../* @__PURE__ */ new Set([...ownerConfigTargets, ...envTargets])];
     const isOwner = ctx.isOwner;
     if (isOwner) return next();
     const userId2 = ctx.from?.id;
     if (!userId2) return next();
-    try {
-      const activeStatuses = ["member", "creator", "administrator"];
-      const missing = [];
-      for (const sponsorChannel of sponsorChannels) {
-        const member = await ctx.telegram.getChatMember(sponsorChannel, userId2);
-        if (!activeStatuses.includes(member.status)) missing.push(sponsorChannel);
+    let missing = [];
+    let unavailable = false;
+    if (customerRuntime) {
+      const result = await verifyCustomerForceJoin(String(userId2));
+      if (!result.enabled || result.allowed) return next();
+      missing = result.missingTargets ?? [];
+      unavailable = Boolean(result.unavailable);
+    } else {
+      if (localTargets.length === 0) return next();
+      try {
+        const activeStatuses = ["member", "creator", "administrator"];
+        for (const sponsorChannel of localTargets) {
+          const member = await ctx.telegram.getChatMember(sponsorChannel, userId2);
+          if (!activeStatuses.includes(member.status) && !(member.status === "restricted" && member.is_member === true)) missing.push(sponsorChannel);
+        }
+      } catch {
+        unavailable = true;
       }
-      if (missing.length > 0) {
-        await ctx.reply(
-          `\u26A0\uFE0F <b>Access Restricted</b>
-
-You must join these channels/groups first:
-${missing.join("\n")}`,
-          {
-            parse_mode: "HTML",
-            reply_markup: {
-              inline_keyboard: [
-                ...missing.filter((target) => target.startsWith("@")).map((target) => [
-                  {
-                    text: `\u{1F4E2} Join ${target}`,
-                    url: `https://t.me/${target.replace("@", "")}`
-                  }
-                ]),
-                [{ text: "\u2705 I Joined", callback_data: "verify:joined" }]
-              ]
-            }
-          }
-        ).catch(() => {
-        });
-        return;
-      }
-    } catch {
+      if (!unavailable && missing.length === 0) return next();
     }
-    return next();
+    const targets = missing.length > 0 ? missing : localTargets;
+    const detail = unavailable ? "Membership verification is temporarily unavailable. Please try again shortly." : `You must join these channels/groups first:
+${targets.join("\n")}`;
+    await ctx.reply(
+      `\u26A0\uFE0F <b>Access Restricted</b>
+
+${detail}`,
+      {
+        parse_mode: "HTML",
+        reply_markup: {
+          inline_keyboard: [
+            ...targets.filter((target) => target.startsWith("@")).map((target) => [{ text: `\u{1F4E2} Join ${target}`, url: `https://t.me/${target.replace("@", "")}` }]),
+            [{ text: "\u2705 I Joined", callback_data: "verify:joined" }]
+          ]
+        }
+      }
+    ).catch(() => {
+    });
+    return;
   };
 }
 function telegramSudoMiddleware() {
@@ -12328,6 +12421,7 @@ var init_auth = __esm({
   "src/telegram/middlewares/auth.ts"() {
     "use strict";
     init_workspace();
+    init_force_join_verifier();
     init_logger();
     maintenanceMode = process.env.MAINTENANCE_MODE === "true";
     globalPaused = false;
@@ -14755,8 +14849,8 @@ var init_session = __esm({
 });
 
 // src/telegram/handlers/bucket.ts
-import fs5 from "fs";
-import path5 from "path";
+import fs6 from "fs";
+import path6 from "path";
 function stopValidationLiveLog(telegramId) {
   const current = liveSubscriptions.get(telegramId);
   if (!current) return;
@@ -14905,9 +14999,9 @@ async function handleExportBucket(ctx, format, bucket = "active") {
       });
       return;
     }
-    const filename = path5.basename(report.filepath);
+    const filename = path6.basename(report.filepath);
     await ctx.replyWithDocument(
-      { source: fs5.createReadStream(report.filepath), filename },
+      { source: fs6.createReadStream(report.filepath), filename },
       { caption: `\u2705 ${bucket.toUpperCase()} export
 Total records: ${report.totalRecords}
 Exported records: ${report.exportedRecords}
@@ -15045,9 +15139,9 @@ __export(tutorials_exports, {
   saveTutorialMediaFile: () => saveTutorialMediaFile,
   validTutorialCommands: () => validTutorialCommands
 });
-import fs6 from "fs";
+import fs7 from "fs";
 import fsp2 from "fs/promises";
-import path6 from "path";
+import path7 from "path";
 import crypto6 from "node:crypto";
 function normalizeTutorialCommand(command) {
   return String(command ?? "").trim().toLowerCase().replace(/^[./!]+/u, "");
@@ -15073,9 +15167,9 @@ function isValidTutorialCommand(command) {
   return canonicalTutorialCommand(command) !== null;
 }
 function loadTutorials() {
-  if (!fs6.existsSync(TUTORIALS_INDEX)) return [];
+  if (!fs7.existsSync(TUTORIALS_INDEX)) return [];
   try {
-    const parsed = JSON.parse(fs6.readFileSync(TUTORIALS_INDEX, "utf8"));
+    const parsed = JSON.parse(fs7.readFileSync(TUTORIALS_INDEX, "utf8"));
     if (!Array.isArray(parsed)) return [];
     const normalized = [];
     const byCommand = /* @__PURE__ */ new Map();
@@ -15107,12 +15201,12 @@ function loadTutorials() {
   }
 }
 function atomicWriteJson(filePath, data) {
-  fs6.mkdirSync(path6.dirname(filePath), { recursive: true, mode: 448 });
+  fs7.mkdirSync(path7.dirname(filePath), { recursive: true, mode: 448 });
   const tempPath = `${filePath}.tmp-${process.pid}-${Date.now()}`;
-  fs6.writeFileSync(tempPath, JSON.stringify(data, null, 2), { mode: 384 });
-  fs6.renameSync(tempPath, filePath);
+  fs7.writeFileSync(tempPath, JSON.stringify(data, null, 2), { mode: 384 });
+  fs7.renameSync(tempPath, filePath);
   try {
-    fs6.chmodSync(filePath, 384);
+    fs7.chmodSync(filePath, 384);
   } catch {
   }
 }
@@ -15128,7 +15222,7 @@ function listTutorials() {
 }
 function removeMediaFile(record) {
   try {
-    if (record?.filePath && fs6.existsSync(record.filePath)) fs6.unlinkSync(record.filePath);
+    if (record?.filePath && fs7.existsSync(record.filePath)) fs7.unlinkSync(record.filePath);
   } catch (err) {
     logger.warn("[Tutorials] media cleanup failed", { err: String(err) });
   }
@@ -15158,8 +15252,8 @@ function assetFor(record, type) {
 function readAsset(asset) {
   if (!asset?.filePath) return null;
   try {
-    if (!fs6.existsSync(asset.filePath)) return null;
-    const buffer = fs6.readFileSync(asset.filePath);
+    if (!fs7.existsSync(asset.filePath)) return null;
+    const buffer = fs7.readFileSync(asset.filePath);
     return buffer.length > 0 ? buffer : null;
   } catch {
     return null;
@@ -15189,20 +15283,20 @@ function saveTutorialMedia(command, type, buffer, mimeType) {
   const ext = extensionFor(type, mimeType);
   const safeName2 = cmd.replace(/[^a-z0-9_-]/gi, "") || GAME_API_TUTORIAL;
   const fileName = `${safeName2}-${type}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}.${ext}`;
-  const filePath = path6.join(TUTORIALS_DIR, fileName);
+  const filePath = path7.join(TUTORIALS_DIR, fileName);
   const tempPath = `${filePath}.tmp-${process.pid}`;
-  fs6.mkdirSync(TUTORIALS_DIR, { recursive: true, mode: 448 });
+  fs7.mkdirSync(TUTORIALS_DIR, { recursive: true, mode: 448 });
   try {
-    fs6.writeFileSync(tempPath, buffer, { mode: 384 });
-    fs6.renameSync(tempPath, filePath);
+    fs7.writeFileSync(tempPath, buffer, { mode: 384 });
+    fs7.renameSync(tempPath, filePath);
     return persistAssetRecord(cmd, type, filePath, mimeType, buffer.length);
   } catch (err) {
     try {
-      if (fs6.existsSync(tempPath)) fs6.unlinkSync(tempPath);
+      if (fs7.existsSync(tempPath)) fs7.unlinkSync(tempPath);
     } catch {
     }
     try {
-      if (fs6.existsSync(filePath)) fs6.unlinkSync(filePath);
+      if (fs7.existsSync(filePath)) fs7.unlinkSync(filePath);
     } catch {
     }
     logger.warn("[Tutorials] media save failed", { command: cmd, type, err: String(err) });
@@ -15232,7 +15326,7 @@ function persistAssetRecord(cmd, type, filePath, mimeType, bytes) {
     return record;
   } catch (err) {
     try {
-      if (fs6.existsSync(filePath)) fs6.unlinkSync(filePath);
+      if (fs7.existsSync(filePath)) fs7.unlinkSync(filePath);
     } catch {
     }
     logger.warn("[Tutorials] media index update failed", { command: cmd, type, err: String(err) });
@@ -15240,7 +15334,7 @@ function persistAssetRecord(cmd, type, filePath, mimeType, bytes) {
   }
 }
 async function downloadTelegramFile(fileUrl, maxBytes = MAX_MEDIA_BYTES) {
-  const tempPath = path6.join(
+  const tempPath = path7.join(
     TUTORIALS_DIR,
     `.tmp-dl-${process.pid}-${Date.now()}-${crypto6.randomBytes(4).toString("hex")}`
   );
@@ -15256,8 +15350,8 @@ async function downloadTelegramFile(fileUrl, maxBytes = MAX_MEDIA_BYTES) {
       );
     }
     if (!res.body) throw new Error("Download failed: empty response body");
-    fs6.mkdirSync(TUTORIALS_DIR, { recursive: true, mode: 448 });
-    const writer = fs6.createWriteStream(tempPath, { mode: 384 });
+    fs7.mkdirSync(TUTORIALS_DIR, { recursive: true, mode: 448 });
+    const writer = fs7.createWriteStream(tempPath, { mode: 384 });
     let bytes = 0;
     try {
       for await (const chunk of res.body) {
@@ -15283,7 +15377,7 @@ async function downloadTelegramFile(fileUrl, maxBytes = MAX_MEDIA_BYTES) {
     return { filePath: tempPath, bytes: stat.size };
   } catch (err) {
     try {
-      if (fs6.existsSync(tempPath)) fs6.unlinkSync(tempPath);
+      if (fs7.existsSync(tempPath)) fs7.unlinkSync(tempPath);
     } catch {
     }
     throw err;
@@ -15297,10 +15391,10 @@ function saveTutorialMediaFile(command, type, tempFilePath, mimeType) {
     if (!cmd) return null;
     if (type !== "image" && type !== "video") return null;
     if (!mimeType.startsWith(`${type}/`)) return null;
-    if (!tempFilePath || !fs6.existsSync(tempFilePath)) return null;
+    if (!tempFilePath || !fs7.existsSync(tempFilePath)) return null;
     let stat;
     try {
-      stat = fs6.statSync(tempFilePath);
+      stat = fs7.statSync(tempFilePath);
     } catch {
       return null;
     }
@@ -15308,14 +15402,14 @@ function saveTutorialMediaFile(command, type, tempFilePath, mimeType) {
     const ext = extensionFor(type, mimeType);
     const safeName2 = cmd.replace(/[^a-z0-9_-]/gi, "") || GAME_API_TUTORIAL;
     const fileName = `${safeName2}-${type}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}.${ext}`;
-    const filePath = path6.join(TUTORIALS_DIR, fileName);
-    fs6.mkdirSync(TUTORIALS_DIR, { recursive: true, mode: 448 });
+    const filePath = path7.join(TUTORIALS_DIR, fileName);
+    fs7.mkdirSync(TUTORIALS_DIR, { recursive: true, mode: 448 });
     try {
-      fs6.renameSync(tempFilePath, filePath);
+      fs7.renameSync(tempFilePath, filePath);
       return persistAssetRecord(cmd, type, filePath, mimeType, stat.size);
     } catch (err) {
       try {
-        if (fs6.existsSync(filePath)) fs6.unlinkSync(filePath);
+        if (fs7.existsSync(filePath)) fs7.unlinkSync(filePath);
       } catch {
       }
       logger.warn("[Tutorials] streaming media save failed", { command: cmd, type, err: String(err) });
@@ -15323,7 +15417,7 @@ function saveTutorialMediaFile(command, type, tempFilePath, mimeType) {
     }
   } finally {
     try {
-      if (tempFilePath && fs6.existsSync(tempFilePath)) fs6.unlinkSync(tempFilePath);
+      if (tempFilePath && fs7.existsSync(tempFilePath)) fs7.unlinkSync(tempFilePath);
     } catch (err) {
       logger.warn("[Tutorials] temporary media cleanup failed", { tempFilePath, err: String(err) });
     }
@@ -15348,8 +15442,8 @@ var init_tutorials = __esm({
     init_logger();
     init_workspace();
     init_menu_registry();
-    TUTORIALS_INDEX = path6.join(WORKSPACE_ROOT, "_platform", "tutorials.json");
-    TUTORIALS_DIR = path6.join(WORKSPACE_ROOT, "_platform", "tutorials");
+    TUTORIALS_INDEX = path7.join(WORKSPACE_ROOT, "_platform", "tutorials.json");
+    TUTORIALS_DIR = path7.join(WORKSPACE_ROOT, "_platform", "tutorials");
     GAME_API_TUTORIAL = "gameapi";
     MAX_MEDIA_BYTES = 20 * 1024 * 1024;
   }
@@ -15357,8 +15451,8 @@ var init_tutorials = __esm({
 
 // src/services/smart-promotion.ts
 import crypto7 from "node:crypto";
-import fs7 from "node:fs";
-import path7 from "node:path";
+import fs8 from "node:fs";
+import path8 from "node:path";
 function defaultSchedule(telegramId) {
   return {
     timezone: loadConfig(telegramId).timezone ?? DEFAULT_TIMEZONE,
@@ -15504,7 +15598,7 @@ function createPromotionJob(telegramId, input2) {
   const content = { ...input2.content ?? {} };
   if (!content.text?.trim() && !content.mediaPath) throw new Error("Promotion content must include text or media.");
   if (content.mediaPath) {
-    const stat = fs7.statSync(content.mediaPath);
+    const stat = fs8.statSync(content.mediaPath);
     if (!stat.isFile() || stat.size < MIN_MEDIA_BYTES || stat.size > MAX_MEDIA_BYTES2) {
       throw new Error("Promotion media must be a regular file between 1 byte and 25 MB.");
     }
@@ -15567,13 +15661,13 @@ function stopPromotionJob(telegramId, jobId) {
 function removeUnreferencedPromotionMedia(telegramId, job) {
   const mediaPath = job.content.mediaPath;
   if (!mediaPath) return;
-  const managedDir = path7.resolve(promotionMediaDir(telegramId));
-  const resolvedPath = path7.resolve(mediaPath);
-  if (!resolvedPath.startsWith(`${managedDir}${path7.sep}`)) return;
+  const managedDir = path8.resolve(promotionMediaDir(telegramId));
+  const resolvedPath = path8.resolve(mediaPath);
+  if (!resolvedPath.startsWith(`${managedDir}${path8.sep}`)) return;
   const stillReferenced = loadPromotionJobs(telegramId).some((candidate) => candidate.content.mediaPath === mediaPath);
   if (stillReferenced) return;
   try {
-    fs7.unlinkSync(resolvedPath);
+    fs8.unlinkSync(resolvedPath);
   } catch (error2) {
     if (error2.code !== "ENOENT") {
       logger.warn("[SmartPromotion] Could not remove deleted job media", { telegramId, error: String(error2) });
@@ -15716,7 +15810,7 @@ function shouldStop(job) {
 }
 async function sendTarget(job, target, socket, sessionId) {
   let mediaBuffer;
-  if (job.content.mediaPath) mediaBuffer = await fs7.promises.readFile(job.content.mediaPath);
+  if (job.content.mediaPath) mediaBuffer = await fs8.promises.readFile(job.content.mediaPath);
   await sendGroupStatus(socket, sessionId, target.groupJid, job.content.text ?? job.content.caption ?? "", {
     mediaBuffer,
     mediaType: job.content.mediaType,
@@ -15950,8 +16044,8 @@ var init_smart_promotion = __esm({
 });
 
 // src/telegram/handlers/promotion.ts
-import fs8 from "node:fs";
-import path8 from "node:path";
+import fs9 from "node:fs";
+import path9 from "node:path";
 function watchPromotionDashboard(ctx, workspaceId, sessionId, jobId) {
   const key2 = `${workspaceId}:${jobId}`;
   if (dashboardSubscriptions.has(key2)) return;
@@ -16108,9 +16202,9 @@ async function handlePromotionWizardMedia(ctx) {
     const fileUrl = await ctx.telegram.getFileLink(media.file_id);
     const downloaded = await downloadTelegramFile(fileUrl.toString(), 20 * 1024 * 1024);
     temporaryPath = downloaded.filePath;
-    const extension = path8.extname(temporaryPath).replace(/^\./u, "") || (message?.photo ? "jpg" : "bin");
+    const extension = path9.extname(temporaryPath).replace(/^\./u, "") || (message?.photo ? "jpg" : "bin");
     storedPath = promotionMediaPath(workspaceId, extension);
-    await fs8.promises.rename(temporaryPath, storedPath);
+    await fs9.promises.rename(temporaryPath, storedPath);
     temporaryPath = void 0;
     const mediaType = message?.photo ? "image" : message?.video ? "video" : message?.audio ? "audio" : "document";
     return await createWizardJob(ctx, wizard, {
@@ -16123,12 +16217,12 @@ async function handlePromotionWizardMedia(ctx) {
       ptt: mediaType === "audio" ? Boolean(media.voice) : void 0
     });
   } catch (error2) {
-    if (storedPath) await fs8.promises.unlink(storedPath).catch(() => {
+    if (storedPath) await fs9.promises.unlink(storedPath).catch(() => {
     });
     await ctx.reply(noticeCard("Promotion Media Failed", "Telegram could not prepare that file. Try a smaller supported media file.", "error"), { parse_mode: "HTML" });
     return true;
   } finally {
-    if (temporaryPath) await fs8.promises.unlink(temporaryPath).catch(() => {
+    if (temporaryPath) await fs9.promises.unlink(temporaryPath).catch(() => {
     });
   }
 }
@@ -16463,7 +16557,7 @@ var init_release_notes = __esm({
 
 // src/services/release-publisher.ts
 import fsp3 from "node:fs/promises";
-import path9 from "node:path";
+import path10 from "node:path";
 function splitMessage(text2) {
   const chunks = [];
   let current = "";
@@ -16542,17 +16636,17 @@ var init_release_publisher = __esm({
     init_workspace();
     init_release_notes();
     init_public_command_catalog();
-    RELEASE_DIR = path9.join(WORKSPACE_ROOT, "_platform");
-    PENDING_PATH = path9.join(RELEASE_DIR, "release-pending.json");
-    LAST_PATH = path9.join(RELEASE_DIR, "release-last.json");
+    RELEASE_DIR = path10.join(WORKSPACE_ROOT, "_platform");
+    PENDING_PATH = path10.join(RELEASE_DIR, "release-pending.json");
+    LAST_PATH = path10.join(RELEASE_DIR, "release-last.json");
     MAX_MESSAGE_LENGTH = 3800;
   }
 });
 
 // src/setup/DependencyChecker.ts
 import { execSync as execSync2 } from "child_process";
-import fs9 from "fs";
-import path10 from "path";
+import fs10 from "fs";
+import path11 from "path";
 var DependencyChecker;
 var init_DependencyChecker = __esm({
   "src/setup/DependencyChecker.ts"() {
@@ -16649,18 +16743,18 @@ var init_DependencyChecker = __esm({
         let current = process.cwd();
         let root = current;
         for (let i = 0; i < 5; i++) {
-          if (fs9.existsSync(path10.join(current, "pnpm-workspace.yaml")) || fs9.existsSync(path10.join(current, ".git"))) {
+          if (fs10.existsSync(path11.join(current, "pnpm-workspace.yaml")) || fs10.existsSync(path11.join(current, ".git"))) {
             root = current;
             break;
           }
-          current = path10.dirname(current);
+          current = path11.dirname(current);
         }
-        const botPackagePath = path10.join(root, "artifacts/wa-bridge");
-        const hasBotPackage = fs9.existsSync(botPackagePath);
+        const botPackagePath = path11.join(root, "artifacts/wa-bridge");
+        const hasBotPackage = fs10.existsSync(botPackagePath);
         return {
           root,
           botPackagePath: hasBotPackage ? botPackagePath : current,
-          isWorkspace: fs9.existsSync(path10.join(root, "pnpm-workspace.yaml"))
+          isWorkspace: fs10.existsSync(path11.join(root, "pnpm-workspace.yaml"))
         };
       }
     };
@@ -16669,8 +16763,8 @@ var init_DependencyChecker = __esm({
 
 // src/services/deployment.ts
 import { spawn } from "child_process";
-import fs10, { existsSync, rmSync } from "fs";
-import path11 from "path";
+import fs11, { existsSync, rmSync } from "fs";
+import path12 from "path";
 import { fileURLToPath as fileURLToPath2 } from "url";
 function runLive(cmd, args, cwd, onLine) {
   return new Promise((resolve, reject) => {
@@ -16781,8 +16875,8 @@ async function runDeployment(onProgress) {
       try {
         await safeExec(`git reset --hard ${prevCommit}`, APP_DIR);
         await safeExec(`git clean -fd`, APP_DIR);
-        const DIST_PATH = path11.join(WA_BRIDGE_DIR, "dist");
-        const DIST_OLD = path11.join(WA_BRIDGE_DIR, "dist_old");
+        const DIST_PATH = path12.join(WA_BRIDGE_DIR, "dist");
+        const DIST_OLD = path12.join(WA_BRIDGE_DIR, "dist_old");
         if (existsSync(DIST_OLD)) {
           rmSync(DIST_PATH, { recursive: true, force: true });
           await safeExec(`mv ${DIST_OLD} ${DIST_PATH}`, APP_DIR);
@@ -16799,7 +16893,7 @@ async function runDeployment(onProgress) {
   };
   try {
     log.push("\u{1F50D} <b>[1/13] Verifying repository...</b>");
-    if (!existsSync(path11.join(APP_DIR, ".git"))) return await fail("Verify Repo", new Error(`No git repo at ${APP_DIR}`));
+    if (!existsSync(path12.join(APP_DIR, ".git"))) return await fail("Verify Repo", new Error(`No git repo at ${APP_DIR}`));
     prevCommit = await safeExec("git rev-parse --short HEAD");
     log.push(`\u2705 Repo verified at <code>${prevCommit}</code>`);
     log.push("\u{1F50D} <b>[2/13] Detecting local changes...</b>");
@@ -16846,9 +16940,9 @@ async function runDeployment(onProgress) {
     log.push("\u2705 Cache cleared");
     log.push("\u{1F528} <b>[6/13] Rebuilding wa-bridge...</b>");
     buildStart = Date.now();
-    const DIST_PATH = path11.join(WA_BRIDGE_DIR, "dist");
-    const DIST_NEW = path11.join(WA_BRIDGE_DIR, "dist_new");
-    const DIST_OLD = path11.join(WA_BRIDGE_DIR, "dist_old");
+    const DIST_PATH = path12.join(WA_BRIDGE_DIR, "dist");
+    const DIST_NEW = path12.join(WA_BRIDGE_DIR, "dist_new");
+    const DIST_OLD = path12.join(WA_BRIDGE_DIR, "dist_old");
     rmSync(DIST_NEW, { recursive: true, force: true });
     try {
       await runLive("sh", ["-c", `export OUT_DIR=dist_new && pnpm --filter @workspace/wa-bridge run build`], APP_DIR, (l) => push(`  <code>${l}</code>`));
@@ -16860,8 +16954,8 @@ async function runDeployment(onProgress) {
     log.push(`\u2705 Build done in ${(buildDurationMs / 1e3).toFixed(1)}s`);
     log.push("\u{1F504} <b>[7/13] Performing atomic dist swap...</b>");
     let entryFile = "index.js";
-    if (!existsSync(path11.join(DIST_NEW, entryFile))) {
-      const files = fs10.readdirSync(DIST_NEW);
+    if (!existsSync(path12.join(DIST_NEW, entryFile))) {
+      const files = fs11.readdirSync(DIST_NEW);
       const jsFile = files.find((f) => f.endsWith(".js"));
       if (jsFile) entryFile = jsFile;
       else return await fail("Verify Build", new Error("Build output missing entry JS file in dist_new"));
@@ -16873,7 +16967,7 @@ async function runDeployment(onProgress) {
     await safeExec(`mv ${DIST_NEW} ${DIST_PATH}`, APP_DIR);
     log.push("\u2705 Dist swapped");
     log.push("\u{1F50D} <b>[8/13] Pre-restart health verification...</b>");
-    if (existsSync(path11.join(APP_DIR, "artifacts/workspaces"))) {
+    if (existsSync(path12.join(APP_DIR, "artifacts/workspaces"))) {
       log.push("  - Session registry intact");
     } else {
       log.push("  \u26A0\uFE0F Session registry empty");
@@ -16927,7 +17021,7 @@ var init_deployment = __esm({
     init_logger();
     init_release_publisher();
     init_DependencyChecker();
-    __dirname2 = path11.dirname(fileURLToPath2(import.meta.url));
+    __dirname2 = path12.dirname(fileURLToPath2(import.meta.url));
     workspaceInfo = DependencyChecker.detectWorkspaceInfo();
     APP_DIR = workspaceInfo.root;
     WA_BRIDGE_DIR = workspaceInfo.botPackagePath;
@@ -17009,7 +17103,7 @@ var init_omni_session_scheduler = __esm({
 });
 
 // src/services/database-health.ts
-import fs11 from "node:fs";
+import fs12 from "node:fs";
 import { execFile as execFile2 } from "node:child_process";
 import { promisify as promisify2 } from "node:util";
 function parseInfoValue(info2, key2) {
@@ -17079,11 +17173,11 @@ async function mongoHealth() {
 }
 function diskHealth() {
   try {
-    const path33 = process.env.OMEGA_DISK_PATH?.trim() || "/";
-    const stat = fs11.statfsSync(path33);
+    const path34 = process.env.OMEGA_DISK_PATH?.trim() || "/";
+    const stat = fs12.statfsSync(path34);
     const totalBytes = Number(stat.blocks) * Number(stat.bsize);
     const freeBytes = Number(stat.bavail) * Number(stat.bsize);
-    return { path: path33, totalBytes, freeBytes, usedBytes: Math.max(0, totalBytes - freeBytes) };
+    return { path: path34, totalBytes, freeBytes, usedBytes: Math.max(0, totalBytes - freeBytes) };
   } catch {
     return { path: "/", totalBytes: 0, freeBytes: 0, usedBytes: 0 };
   }
@@ -17130,25 +17224,25 @@ __export(auto_promote_exports, {
   saveGlobalJob: () => saveGlobalJob,
   startAutoPromoteScheduler: () => startAutoPromoteScheduler
 });
-import fs12 from "fs";
-import path12 from "path";
+import fs13 from "fs";
+import path13 from "path";
 function readJson2(file, fallback) {
   try {
-    if (!fs12.existsSync(file)) return fallback;
-    return JSON.parse(fs12.readFileSync(file, "utf8"));
+    if (!fs13.existsSync(file)) return fallback;
+    return JSON.parse(fs13.readFileSync(file, "utf8"));
   } catch (err) {
     logger.warn("[AutoPromote] Could not read persisted state", { file, err: String(err) });
     return fallback;
   }
 }
 function atomicWrite(file, value) {
-  fs12.mkdirSync(path12.dirname(file), { recursive: true, mode: 448 });
+  fs13.mkdirSync(path13.dirname(file), { recursive: true, mode: 448 });
   const tmp = `${file}.tmp-${process.pid}`;
-  fs12.writeFileSync(tmp, JSON.stringify(value, null, 2), { mode: 384 });
-  fs12.renameSync(tmp, file);
+  fs13.writeFileSync(tmp, JSON.stringify(value, null, 2), { mode: 384 });
+  fs13.renameSync(tmp, file);
 }
 function sessionJobsPath(telegramId) {
-  return path12.join(WORKSPACE_ROOT, telegramId, "auto-promote.json");
+  return path13.join(WORKSPACE_ROOT, telegramId, "auto-promote.json");
 }
 function normalizeJob(job) {
   return {
@@ -17160,7 +17254,7 @@ function normalizeJob(job) {
 function loadJobs(telegramId) {
   const currentPath = sessionJobsPath(telegramId);
   let jobs = readJson2(currentPath, []);
-  const legacyPath = path12.join("workspaces", telegramId, "auto-promote.json");
+  const legacyPath = path13.join("workspaces", telegramId, "auto-promote.json");
   if (jobs.length === 0 && legacyPath !== currentPath) {
     jobs = readJson2(legacyPath, []);
     if (jobs.length > 0) {
@@ -17183,7 +17277,7 @@ function getGlobalJob() {
   if (migrated) {
     savePlatformConfig({ ...platform, globalAutoPromote: migrated });
     try {
-      fs12.rmSync(LEGACY_ADMIN_PATH, { force: true });
+      fs13.rmSync(LEGACY_ADMIN_PATH, { force: true });
     } catch {
     }
     logger.info("[AutoPromote] Migrated legacy admin queue to platform storage");
@@ -17231,7 +17325,7 @@ function removeAdminLink(linkIndex) {
 function clearAdminJobs() {
   saveGlobalJob(void 0);
   try {
-    fs12.rmSync(LEGACY_ADMIN_PATH, { force: true });
+    fs13.rmSync(LEGACY_ADMIN_PATH, { force: true });
   } catch {
   }
 }
@@ -17321,7 +17415,7 @@ async function waitAutoPromoteStatus(job, sessionId) {
 }
 async function runLink(sessionId, telegramId, link, linkIndex, slot, onDone) {
   const socket = getSocket(sessionId);
-  if (!socket || isFrozen(sessionId) || !fs12.existsSync(sessionDir(telegramId, sessionId))) {
+  if (!socket || isFrozen(sessionId) || !fs13.existsSync(sessionDir(telegramId, sessionId))) {
     logger.warn("[AutoPromote] Session unavailable", { sessionId, slot });
     return;
   }
@@ -17497,7 +17591,7 @@ var init_auto_promote = __esm({
     DAY_MS = 864e5;
     AUTO_PROMOTE_JOB_TIMEOUT_MS = Math.max(6e4, Number.parseInt(process.env.AUTO_PROMOTE_JOB_TIMEOUT_MS ?? "900000", 10) || 9e5);
     AUTO_PROMOTE_SESSION_STAGGER_MS = Math.max(0, Number.parseInt(process.env.AUTO_PROMOTE_SESSION_STAGGER_MS ?? "10000", 10) || 1e4);
-    LEGACY_ADMIN_PATH = path12.join("workspaces", "_admin", "auto-promote.json");
+    LEGACY_ADMIN_PATH = path13.join("workspaces", "_admin", "auto-promote.json");
     schedulerStarted2 = false;
     sessionRunQueues = /* @__PURE__ */ new Map();
     globalRunActive = false;
@@ -18633,19 +18727,19 @@ var init_admin = __esm({
 });
 
 // src/services/ideas.ts
-import fs13 from "fs";
-import path13 from "path";
+import fs14 from "fs";
+import path14 from "path";
 function loadIdeas() {
-  if (!fs13.existsSync(IDEAS_PATH)) return [];
+  if (!fs14.existsSync(IDEAS_PATH)) return [];
   try {
-    return JSON.parse(fs13.readFileSync(IDEAS_PATH, "utf8"));
+    return JSON.parse(fs14.readFileSync(IDEAS_PATH, "utf8"));
   } catch {
     return [];
   }
 }
 function saveIdeas(ideas) {
-  fs13.mkdirSync(path13.dirname(IDEAS_PATH), { recursive: true });
-  fs13.writeFileSync(IDEAS_PATH, JSON.stringify(ideas, null, 2));
+  fs14.mkdirSync(path14.dirname(IDEAS_PATH), { recursive: true });
+  fs14.writeFileSync(IDEAS_PATH, JSON.stringify(ideas, null, 2));
 }
 function addIdea(entry) {
   const ideas = loadIdeas();
@@ -18681,7 +18775,7 @@ var init_ideas = __esm({
     "use strict";
     init_logger();
     init_workspace();
-    IDEAS_PATH = path13.join(WORKSPACE_ROOT, "_platform", "ideas.json");
+    IDEAS_PATH = path14.join(WORKSPACE_ROOT, "_platform", "ideas.json");
   }
 });
 
@@ -18946,7 +19040,7 @@ var init_help = __esm({
 });
 
 // src/telegram/handlers/tutorials.ts
-import fs14 from "node:fs";
+import fs15 from "node:fs";
 async function acknowledgeCallback(ctx, text2) {
   if (ctx.callbackQuery) await ctx.answerCbQuery(text2).catch((error2) => {
     logger.warn("[Tutorials] callback acknowledgement failed", { err: String(error2) });
@@ -19094,7 +19188,7 @@ async function saveTutorialUpload(ctx, filePath, mimeType) {
     const pending = ctx.session.tutorialPending;
     if (!pending?.command || !pending.type) return;
     delete ctx.session.tutorialPending;
-    if (!filePath || !fs14.existsSync(filePath)) {
+    if (!filePath || !fs15.existsSync(filePath)) {
       await ctx.reply(noticeCard("Upload Failed", "No media received \u2014 try again.", "error"), {
         parse_mode: "HTML",
         reply_markup: backKeyboard("admin:tutorials")
@@ -19119,7 +19213,7 @@ async function saveTutorialUpload(ctx, filePath, mimeType) {
     const record = saveTutorialMediaFile(pending.command, mediaType, filePath, mimeType);
     if (!record) {
       try {
-        if (fs14.existsSync(filePath)) fs14.unlinkSync(filePath);
+        if (fs15.existsSync(filePath)) fs15.unlinkSync(filePath);
       } catch {
       }
       await ctx.reply(noticeCard("Save Failed", "The tutorial command is no longer valid, or the media could not be persisted. Check the server log for the safe failure reason.", "error"), {
@@ -19138,7 +19232,7 @@ async function saveTutorialUpload(ctx, filePath, mimeType) {
     );
   } finally {
     try {
-      if (filePath && fs14.existsSync(filePath)) fs14.unlinkSync(filePath);
+      if (filePath && fs15.existsSync(filePath)) fs15.unlinkSync(filePath);
     } catch (error2) {
       logger.warn("[Tutorials] temporary upload cleanup failed", { filePath, err: String(error2) });
     }
@@ -19684,16 +19778,16 @@ var init_moderation_pipeline = __esm({
 });
 
 // src/services/group-config.ts
-import fs15 from "fs";
-import path14 from "path";
+import fs16 from "fs";
+import path15 from "path";
 function configPath(telegramId, sessionId) {
-  return path14.join(sessionDir(telegramId, sessionId), "group-event-config.json");
+  return path15.join(sessionDir(telegramId, sessionId), "group-event-config.json");
 }
 function loadSessionGroupEventConfig(telegramId, sessionId) {
   const p = configPath(telegramId, sessionId);
-  if (!fs15.existsSync(p)) return {};
+  if (!fs16.existsSync(p)) return {};
   try {
-    return JSON.parse(fs15.readFileSync(p, "utf8"));
+    return JSON.parse(fs16.readFileSync(p, "utf8"));
   } catch (err) {
     logger.warn("[GroupConfig] Failed to parse group-event-config", { err: String(err) });
     return {};
@@ -19701,8 +19795,8 @@ function loadSessionGroupEventConfig(telegramId, sessionId) {
 }
 function saveSessionGroupEventConfig(telegramId, sessionId, config2) {
   const p = configPath(telegramId, sessionId);
-  fs15.mkdirSync(path14.dirname(p), { recursive: true });
-  fs15.writeFileSync(p, JSON.stringify(config2, null, 2), "utf8");
+  fs16.mkdirSync(path15.dirname(p), { recursive: true });
+  fs16.writeFileSync(p, JSON.stringify(config2, null, 2), "utf8");
 }
 function loadGroupEventConfig(telegramId, sessionId, groupJid) {
   const all = loadSessionGroupEventConfig(telegramId, sessionId);
@@ -19771,8 +19865,8 @@ var init_group_config = __esm({
 });
 
 // src/whatsapp/anti-system/config.ts
-import fs16 from "fs";
-import path15 from "path";
+import fs17 from "fs";
+import path16 from "path";
 function defaultModuleConfig(action = "delete") {
   return {
     enabled: false,
@@ -19811,13 +19905,13 @@ function defaultDemoteConfig() {
   };
 }
 function antiConfigPath(telegramId, sessionId) {
-  return path15.join(sessionDir(telegramId, sessionId), "anti-groups.json");
+  return path16.join(sessionDir(telegramId, sessionId), "anti-groups.json");
 }
 function loadSessionAntiConfig(telegramId, sessionId) {
   const p = antiConfigPath(telegramId, sessionId);
-  if (!fs16.existsSync(p)) return {};
+  if (!fs17.existsSync(p)) return {};
   try {
-    return JSON.parse(fs16.readFileSync(p, "utf8"));
+    return JSON.parse(fs17.readFileSync(p, "utf8"));
   } catch (err) {
     logger.warn("[AntiSystem] Failed to parse anti config, resetting", { err: String(err) });
     return {};
@@ -19825,8 +19919,8 @@ function loadSessionAntiConfig(telegramId, sessionId) {
 }
 function saveSessionAntiConfig(telegramId, sessionId, config2) {
   const p = antiConfigPath(telegramId, sessionId);
-  fs16.mkdirSync(path15.dirname(p), { recursive: true });
-  fs16.writeFileSync(p, JSON.stringify(config2, null, 2), "utf8");
+  fs17.mkdirSync(path16.dirname(p), { recursive: true });
+  fs17.writeFileSync(p, JSON.stringify(config2, null, 2), "utf8");
 }
 function loadGroupAntiConfig(telegramId, sessionId, groupJid) {
   const all = loadSessionAntiConfig(telegramId, sessionId);
@@ -25157,7 +25251,7 @@ var init_bot = __esm({
 });
 
 // src/services/menu-canvas.ts
-import fs17 from "node:fs";
+import fs18 from "node:fs";
 import sharp2 from "sharp";
 function escapeXml(value) {
   return String(value ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&apos;");
@@ -25347,10 +25441,10 @@ async function generateMenuCanvas(options) {
 }
 async function resolveMenuMedia(options) {
   const configured2 = options.meta?.menuMedia;
-  if (configured2?.filePath && fs17.existsSync(configured2.filePath)) {
+  if (configured2?.filePath && fs18.existsSync(configured2.filePath)) {
     try {
       return {
-        buffer: fs17.readFileSync(configured2.filePath),
+        buffer: fs18.readFileSync(configured2.filePath),
         type: configured2.type,
         mimetype: configured2.mimeType,
         caption: options.caption
@@ -25505,23 +25599,23 @@ var init_private_mode_guard = __esm({
 });
 
 // src/services/a2v-store.ts
-import fs18 from "node:fs";
+import fs19 from "node:fs";
 import fsp4 from "node:fs/promises";
-import path16 from "node:path";
+import path17 from "node:path";
 function storeDir(telegramId, sessionId) {
-  return path16.join(sessionDir(telegramId, sessionId), "a2v");
+  return path17.join(sessionDir(telegramId, sessionId), "a2v");
 }
 function recordPath(telegramId, sessionId) {
-  return path16.join(storeDir(telegramId, sessionId), "record.json");
+  return path17.join(storeDir(telegramId, sessionId), "record.json");
 }
 function componentPath(telegramId, sessionId, kind) {
-  return path16.join(storeDir(telegramId, sessionId), kind === "video" ? "video.mp4" : "audio.source");
+  return path17.join(storeDir(telegramId, sessionId), kind === "video" ? "video.mp4" : "audio.source");
 }
 async function loadA2V(telegramId, sessionId) {
   try {
     const raw = JSON.parse(await fsp4.readFile(recordPath(telegramId, sessionId), "utf8"));
-    const validVideo = Boolean(raw.videoPath && fs18.existsSync(raw.videoPath));
-    const validAudio = Boolean(raw.audioPath && fs18.existsSync(raw.audioPath));
+    const validVideo = Boolean(raw.videoPath && fs19.existsSync(raw.videoPath));
+    const validAudio = Boolean(raw.audioPath && fs19.existsSync(raw.audioPath));
     if (raw.expiresAt <= Date.now() || !validVideo && !validAudio) {
       await clearA2V(telegramId, sessionId);
       return null;
@@ -25544,8 +25638,8 @@ async function saveComponent(telegramId, sessionId, sourcePath, sizeBytes, kind)
   await fsp4.copyFile(sourcePath, temp);
   await fsp4.rename(temp, target);
   const record = {
-    ...existing?.videoPath && fs18.existsSync(existing.videoPath) ? { videoPath: existing.videoPath } : {},
-    ...existing?.audioPath && fs18.existsSync(existing.audioPath) ? { audioPath: existing.audioPath } : {},
+    ...existing?.videoPath && fs19.existsSync(existing.videoPath) ? { videoPath: existing.videoPath } : {},
+    ...existing?.audioPath && fs19.existsSync(existing.audioPath) ? { audioPath: existing.audioPath } : {},
     savedAt: Date.now(),
     expiresAt: Date.now() + RETENTION_MS,
     sizeBytes
@@ -25562,7 +25656,7 @@ function saveA2VAudio(telegramId, sessionId, sourcePath, sizeBytes) {
   return saveComponent(telegramId, sessionId, sourcePath, sizeBytes, "audio");
 }
 async function clearA2V(telegramId, sessionId) {
-  const existed = fs18.existsSync(recordPath(telegramId, sessionId)) || fs18.existsSync(storeDir(telegramId, sessionId));
+  const existed = fs19.existsSync(recordPath(telegramId, sessionId)) || fs19.existsSync(storeDir(telegramId, sessionId));
   await fsp4.rm(storeDir(telegramId, sessionId), { recursive: true, force: true });
   return existed;
 }
@@ -25578,9 +25672,9 @@ var init_a2v_store = __esm({
 // src/whatsapp/commands/sticker-media.ts
 import sharp3 from "sharp";
 import { execFile as execFile3 } from "node:child_process";
-import { promises as fs19 } from "node:fs";
+import { promises as fs20 } from "node:fs";
 import os2 from "node:os";
-import path17 from "node:path";
+import path18 from "node:path";
 import { promisify as promisify3 } from "node:util";
 async function acquireStickerSlot() {
   if (activeStickerConversions >= MAX_CONCURRENT_STICKER_CONVERSIONS) {
@@ -25636,15 +25730,15 @@ async function encodeAnimatedSticker(source, options = {}) {
   }
   let root;
   try {
-    root = await fs19.mkdtemp(path17.join(os2.tmpdir(), `omega-sticker-${safeToken(options.sessionId)}-${safeToken(options.jobId)}-`));
+    root = await fs20.mkdtemp(path18.join(os2.tmpdir(), `omega-sticker-${safeToken(options.sessionId)}-${safeToken(options.jobId)}-`));
   } catch (error2) {
     release();
     throw error2;
   }
-  const inputPath = path17.join(root, `input${extensionFor2(options.inputExtension)}`);
-  const outputPath = path17.join(root, "output.webp");
+  const inputPath = path18.join(root, `input${extensionFor2(options.inputExtension)}`);
+  const outputPath = path18.join(root, "output.webp");
   try {
-    await fs19.writeFile(inputPath, source, { mode: 384 });
+    await fs20.writeFile(inputPath, source, { mode: 384 });
     let lastBytes = 0;
     const profiles = [
       // Start at full resolution and high quality. Reduce frame rate before
@@ -25658,7 +25752,7 @@ async function encodeAnimatedSticker(source, options = {}) {
       { fps: 8, size: 360, quality: 76 }
     ];
     for (const profile of profiles) {
-      await fs19.rm(outputPath, { force: true });
+      await fs20.rm(outputPath, { force: true });
       try {
         await execFileAsync3(ffmpeg, [
           "-hide_banner",
@@ -25685,16 +25779,16 @@ async function encodeAnimatedSticker(source, options = {}) {
           outputPath
         ], { timeout: 18e4, maxBuffer: 2 * 1024 * 1024 });
       } catch (error2) {
-        const stat = await fs19.stat(outputPath).catch(() => null);
+        const stat = await fs20.stat(outputPath).catch(() => null);
         if (!stat?.size) throw new Error(`FFmpeg animation conversion failed: ${String(error2).slice(0, 240)}`);
       }
-      const output2 = await fs19.readFile(outputPath);
+      const output2 = await fs20.readFile(outputPath);
       lastBytes = output2.length;
       if (lastBytes <= MAX_STICKER_BYTES && isAnimatedWebP(output2)) return output2;
     }
     throw new Error(lastBytes > MAX_STICKER_BYTES ? `Animated media remains too large after adaptive encoding (${Math.ceil(lastBytes / 1024)} KB).` : "FFmpeg produced a WebP that is not animated.");
   } finally {
-    await fs19.rm(root, { recursive: true, force: true }).catch(() => void 0);
+    await fs20.rm(root, { recursive: true, force: true }).catch(() => void 0);
     release();
   }
 }
@@ -25925,7 +26019,7 @@ __export(tg_sticker_exports, {
   resolvePostMedia: () => resolvePostMedia,
   telegramRetryAfterSeconds: () => telegramRetryAfterSeconds
 });
-import path18 from "node:path";
+import path19 from "node:path";
 function parseTgLink(raw) {
   const trimmed = (raw || "").trim();
   if (!trimmed) return null;
@@ -26124,7 +26218,7 @@ async function convertPackSticker(pack, sticker, options) {
     throw new Error("Telegram could not resolve the sticker file.");
   }
   const rawBuffer = await downloadFile(file.file_path, file.file_size);
-  const ext = path18.extname(file.file_path).toLowerCase();
+  const ext = path19.extname(file.file_path).toLowerCase();
   const stickerBuffer = ext === ".webm" || ext === ".mp4" || pack.is_video || sticker.type === "video" ? await videoToSticker(rawBuffer, ext || ".webm", options.sessionId) : await staticToSticker(rawBuffer);
   validateWebP(stickerBuffer);
   const finalBuffer = addStickerMetadata(stickerBuffer, options.packname || "PAPPY", options.author || "OMEGA");
@@ -26714,7 +26808,7 @@ var init_CaptchaSolver = __esm({
 });
 
 // src/media/validation.ts
-import fs20 from "node:fs/promises";
+import fs21 from "node:fs/promises";
 function isHtmlishBuffer(buf) {
   if (!buf || buf.length < 8) return false;
   const head = buf.subarray(0, Math.min(buf.length, 4096)).toString("latin1");
@@ -26770,7 +26864,7 @@ function sniffMedia(buf) {
 async function validateMediaFile(filePath, expected) {
   let fd;
   try {
-    fd = await fs20.open(filePath, "r");
+    fd = await fs21.open(filePath, "r");
   } catch {
     return { valid: false, reason: "file unreadable" };
   }
@@ -26806,9 +26900,9 @@ var init_validation = __esm({
 });
 
 // src/media/DownloadManager.ts
-import fs21 from "node:fs";
+import fs22 from "node:fs";
 import fsp5 from "node:fs/promises";
-import path19 from "node:path";
+import path20 from "node:path";
 import { createHash as createHash2, randomUUID } from "node:crypto";
 import axios from "axios";
 import PQueue2 from "p-queue";
@@ -26857,7 +26951,7 @@ function resolveFfmpegPath() {
   if (process.env.FFMPEG_PATH) return process.env.FFMPEG_PATH;
   for (const candidate of ["/usr/bin/ffmpeg", "/usr/local/bin/ffmpeg", "/bin/ffmpeg", "/opt/homebrew/bin/ffmpeg"]) {
     try {
-      if (fs21.existsSync(candidate)) return candidate;
+      if (fs22.existsSync(candidate)) return candidate;
     } catch {
     }
   }
@@ -26867,13 +26961,13 @@ function resolveCookiesFile() {
   const envPath = process.env.YTDLP_COOKIES?.trim() || process.env.YOUTUBE_COOKIES_FILE?.trim();
   if (envPath) {
     try {
-      if (fs21.existsSync(envPath)) return envPath;
+      if (fs22.existsSync(envPath)) return envPath;
     } catch {
     }
   }
-  const platformPath = path19.join(WORKSPACE_ROOT, "_platform", "cookies.txt");
+  const platformPath = path20.join(WORKSPACE_ROOT, "_platform", "cookies.txt");
   try {
-    return fs21.existsSync(platformPath) ? platformPath : void 0;
+    return fs22.existsSync(platformPath) ? platformPath : void 0;
   } catch {
     return void 0;
   }
@@ -27070,7 +27164,7 @@ var init_DownloadManager = __esm({
     SEARCH_LIMIT = 5;
     MAX_MEDIA_QUEUE = 80;
     INNERTUBE_STREAM_TIMEOUT_MS = 12e4;
-    TEMP_ROOT = path19.join(WORKSPACE_ROOT, "_platform", "media");
+    TEMP_ROOT = path20.join(WORKSPACE_ROOT, "_platform", "media");
     BING_URL = "https://www.bing.com/images/search";
     PINTEREST_RESOURCE = "https://www.pinterest.com/resource/BaseSearchResource/get/";
     UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36";
@@ -27098,7 +27192,7 @@ var init_DownloadManager = __esm({
         this.cookiesFile = resolveCookiesFile();
         this.captchaSolver = opts?.captchaSolver ?? getCaptchaSolver();
         this.fetchImpl = opts?.fetchImpl ?? fetch;
-        fs21.mkdirSync(this.tempDir, { recursive: true });
+        fs22.mkdirSync(this.tempDir, { recursive: true });
       }
       /**
        * Admit expensive external work through the singleton queue. This protects
@@ -27128,7 +27222,7 @@ var init_DownloadManager = __esm({
           const entries = await fsp5.readdir(this.tempDir);
           for (const name of entries) {
             try {
-              const st = await fsp5.stat(path19.join(this.tempDir, name));
+              const st = await fsp5.stat(path20.join(this.tempDir, name));
               if (st.isFile()) {
                 files++;
                 bytes += st.size;
@@ -27142,7 +27236,7 @@ var init_DownloadManager = __esm({
       }
       // ── Temp file lifecycle ──────────────────────────────────
       tempPath(ext) {
-        return path19.join(this.tempDir, `${Date.now()}-${randomUUID().slice(0, 8)}.${ext}`);
+        return path20.join(this.tempDir, `${Date.now()}-${randomUUID().slice(0, 8)}.${ext}`);
       }
       /** Remove a temp file (never throws). */
       static async cleanup(paths) {
@@ -27161,7 +27255,7 @@ var init_DownloadManager = __esm({
           const entries = await fsp5.readdir(this.tempDir);
           const now3 = Date.now();
           for (const name of entries) {
-            const full = path19.join(this.tempDir, name);
+            const full = path20.join(this.tempDir, name);
             try {
               const st = await fsp5.stat(full);
               if (st.isFile() && now3 - st.mtimeMs > olderThanMs) {
@@ -27482,12 +27576,12 @@ var init_DownloadManager = __esm({
         const finalArgs = { ...args };
         const started = Date.now();
         let attemptNo = 0;
-        let outPath = path19.join(this.tempDir, `${token2}.${ext}`);
+        let outPath = path20.join(this.tempDir, `${token2}.${ext}`);
         const attemptPaths = [];
         try {
           await this.withRetry(`download (${format})`, () => {
             attemptNo += 1;
-            outPath = path19.join(this.tempDir, `${token2}-${attemptNo}.${ext}`);
+            outPath = path20.join(this.tempDir, `${token2}-${attemptNo}.${ext}`);
             attemptPaths.push(outPath);
             return this.withTimeout(
               this.enqueueWork(() => this.runYtDlp(url, { ...finalArgs, output: outPath }), "Download"),
@@ -27500,7 +27594,7 @@ var init_DownloadManager = __esm({
             const solvedToken = await this.solveFor(url).catch(() => void 0);
             if (solvedToken) {
               attemptNo += 1;
-              const assistedPath = path19.join(this.tempDir, `${token2}-assist-${attemptNo}.${ext}`);
+              const assistedPath = path20.join(this.tempDir, `${token2}-assist-${attemptNo}.${ext}`);
               attemptPaths.push(assistedPath);
               try {
                 await this.withTimeout(
@@ -27510,7 +27604,7 @@ var init_DownloadManager = __esm({
                 );
                 outPath = assistedPath;
                 await _DownloadManager.cleanup(attemptPaths.filter((p) => p !== assistedPath));
-                logger.info("[Media] solver-assisted download succeeded", { file: path19.basename(assistedPath) });
+                logger.info("[Media] solver-assisted download succeeded", { file: path20.basename(assistedPath) });
               } catch (assistErr) {
                 logger.warn("[Media] solver-assisted retry failed \u2014 stopping with the original bot-check error", {
                   err: String(assistErr)
@@ -27527,7 +27621,7 @@ var init_DownloadManager = __esm({
             throw err;
           }
         }
-        if (!fs21.existsSync(outPath)) {
+        if (!fs22.existsSync(outPath)) {
           throw new MediaDownloadError("Download finished but produced no file.", "download-failed");
         }
         const stat = await fsp5.stat(outPath);
@@ -27579,7 +27673,7 @@ var init_DownloadManager = __esm({
           kind,
           bytes: stat.size,
           ms: Date.now() - started,
-          file: path19.basename(outPath)
+          file: path20.basename(outPath)
         });
         return [out];
       }
@@ -27679,7 +27773,7 @@ var init_DownloadManager = __esm({
           }
           const ext = extFor(kind, contentType, kind === "image" ? "jpg" : kind === "video" ? "mp4" : kind === "audio" ? "mp3" : "bin");
           outPath = this.tempPath(ext);
-          await pipeline(res.data, fs21.createWriteStream(outPath));
+          await pipeline(res.data, fs22.createWriteStream(outPath));
           const stat = await fsp5.stat(outPath);
           if (stat.size === 0) {
             await _DownloadManager.cleanup([outPath]);
@@ -27711,7 +27805,7 @@ var init_DownloadManager = __esm({
             );
           }
           const mime = sig?.mime ?? (contentType || this.mimetypeFor(realKind, realExt));
-          const fileName = `${safeName(path19.basename(url.split("?")[0] ?? ""), "media") || "media"}.${realExt}`;
+          const fileName = `${safeName(path20.basename(url.split("?")[0] ?? ""), "media") || "media"}.${realExt}`;
           return {
             kind: realKind,
             filePath: outPath,
@@ -28207,7 +28301,7 @@ ${stderr}`;
 });
 
 // src/media/DeliveryManager.ts
-import fs22 from "node:fs/promises";
+import fs23 from "node:fs/promises";
 function isMp4Media(media) {
   const mime = (media.mimetype ?? "").toLowerCase();
   if (mime.startsWith("video/mp4") || mime === "video/x-m4v") return true;
@@ -28260,11 +28354,11 @@ async function withMediaSendTimeout(promise, timeoutMs2 = MEDIA_SEND_TIMEOUT_MS)
 }
 async function loadBuffer(item) {
   const buffer = item.buffer ?? (item.filePath ? await (async () => {
-    const stat = await fs22.stat(item.filePath);
+    const stat = await fs23.stat(item.filePath);
     if (stat.size > MAX_SEND_BUFFER) {
       throw new Error(`File is ${(stat.size / 1024 / 1024).toFixed(1)} MB \u2014 too large to send.`);
     }
-    return fs22.readFile(item.filePath);
+    return fs23.readFile(item.filePath);
   })() : null);
   if (!buffer || buffer.byteLength === 0) throw new Error("Media source is empty.");
   const signature = sniffMedia(buffer);
@@ -28283,7 +28377,7 @@ async function buildContent2(item, buffer) {
       let thumb = null;
       if (item.thumbnailPath) {
         try {
-          const t = await fs22.readFile(item.thumbnailPath);
+          const t = await fs23.readFile(item.thumbnailPath);
           if (t.byteLength <= 4 * 1024 * 1024) thumb = t;
         } catch {
         }
@@ -28444,7 +28538,7 @@ var init_DeliveryManager = __esm({
         for (const p of paths) {
           if (!p) continue;
           try {
-            await fs22.unlink(p);
+            await fs23.unlink(p);
           } catch {
           }
         }
@@ -30724,7 +30818,7 @@ var require_package = __commonJS({
   "package.json"(exports, module) {
     module.exports = {
       name: "@workspace/wa-bridge",
-      version: "1.2.0",
+      version: "1.2.1",
       description: "Telegram \u2194 WhatsApp Automation Bridge \u2014 Production-Grade Multi-Device Control Center",
       type: "module",
       main: "dist/index.js",
@@ -31262,16 +31356,16 @@ var init_actions = __esm({
 });
 
 // src/whatsapp/anti-system/pending-restores.ts
-import fs23 from "fs";
-import path20 from "path";
+import fs24 from "fs";
+import path21 from "path";
 function restorePath(sessionId, telegramId) {
-  return path20.join(sessionDir(telegramId, sessionId), "pending-restores.json");
+  return path21.join(sessionDir(telegramId, sessionId), "pending-restores.json");
 }
 function loadAll(sessionId, telegramId) {
   const p = restorePath(sessionId, telegramId);
-  if (!fs23.existsSync(p)) return [];
+  if (!fs24.existsSync(p)) return [];
   try {
-    return JSON.parse(fs23.readFileSync(p, "utf8"));
+    return JSON.parse(fs24.readFileSync(p, "utf8"));
   } catch (err) {
     logger.warn("[PendingRestores] Failed to parse, resetting", { err: String(err) });
     return [];
@@ -31279,8 +31373,8 @@ function loadAll(sessionId, telegramId) {
 }
 function saveAll(sessionId, telegramId, restores) {
   const p = restorePath(sessionId, telegramId);
-  fs23.mkdirSync(path20.dirname(p), { recursive: true });
-  fs23.writeFileSync(p, JSON.stringify(restores, null, 2), "utf8");
+  fs24.mkdirSync(path21.dirname(p), { recursive: true });
+  fs24.writeFileSync(p, JSON.stringify(restores, null, 2), "utf8");
 }
 function addPendingRestore(sessionId, telegramId, entry) {
   const restores = loadAll(sessionId, telegramId);
@@ -34215,9 +34309,9 @@ function defaultDictionary() {
     const wordListModule = require3("word-list");
     const file = typeof wordListModule === "string" ? wordListModule : wordListModule.default;
     if (!file) return /* @__PURE__ */ new Set();
-    const fs37 = require3("node:fs");
+    const fs38 = require3("node:fs");
     return new Set(
-      fs37.readFileSync(file, "utf8").split(/\r?\n/u).map((word) => word.trim().toLowerCase()).filter((word) => /^[a-z]+$/u.test(word) && word.length > 1)
+      fs38.readFileSync(file, "utf8").split(/\r?\n/u).map((word) => word.trim().toLowerCase()).filter((word) => /^[a-z]+$/u.test(word) && word.length > 1)
     );
   } catch {
     return /* @__PURE__ */ new Set();
@@ -35925,10 +36019,10 @@ var init_poll_engine = __esm({
 });
 
 // src/whatsapp/games/poll-engine/persistence.ts
-import fs24 from "fs";
-import path21 from "path";
+import fs25 from "fs";
+import path22 from "path";
 function gamesFilePath(telegramId, sessionId) {
-  return path21.join(sessionDir(telegramId, sessionId), "poll-games.json");
+  return path22.join(sessionDir(telegramId, sessionId), "poll-games.json");
 }
 function scopeKey4(snapshot) {
   return `${snapshot.scope.sessionId}:${snapshot.scope.chatJid}:${snapshot.type}`;
@@ -35936,8 +36030,8 @@ function scopeKey4(snapshot) {
 function loadFile(telegramId, sessionId) {
   try {
     const p = gamesFilePath(telegramId, sessionId);
-    if (!fs24.existsSync(p)) return {};
-    const parsed = JSON.parse(fs24.readFileSync(p, "utf8"));
+    if (!fs25.existsSync(p)) return {};
+    const parsed = JSON.parse(fs25.readFileSync(p, "utf8"));
     return parsed ?? {};
   } catch (err) {
     logger.warn("[PollGame] snapshot read failed", { sessionId, err: String(err) });
@@ -35947,10 +36041,10 @@ function loadFile(telegramId, sessionId) {
 function writeFile(telegramId, sessionId, data) {
   try {
     const p = gamesFilePath(telegramId, sessionId);
-    fs24.mkdirSync(path21.dirname(p), { recursive: true });
+    fs25.mkdirSync(path22.dirname(p), { recursive: true });
     const tmp = `${p}.tmp-${process.pid}`;
-    fs24.writeFileSync(tmp, JSON.stringify(data, null, 2));
-    fs24.renameSync(tmp, p);
+    fs25.writeFileSync(tmp, JSON.stringify(data, null, 2));
+    fs25.renameSync(tmp, p);
   } catch (err) {
     logger.warn("[PollGame] snapshot write failed", { sessionId, err: String(err) });
   }
@@ -35971,7 +36065,7 @@ function loadPollGameSnapshots(telegramId, sessionId) {
 function clearPollGameSnapshots(telegramId, sessionId) {
   try {
     const p = gamesFilePath(telegramId, sessionId);
-    if (fs24.existsSync(p)) fs24.rmSync(p, { force: true });
+    if (fs25.existsSync(p)) fs25.rmSync(p, { force: true });
   } catch {
   }
 }
@@ -36107,11 +36201,11 @@ __export(qc_sticker_exports, {
   segmentGraphemes: () => segmentGraphemes
 });
 import sharp5 from "sharp";
-import fs25 from "node:fs";
+import fs26 from "node:fs";
 function resolveEmojiFontFamily() {
   if (emojiFontResolved) return cachedEmojiFontFamily;
   emojiFontResolved = true;
-  cachedEmojiFontFamily = EMOJI_FONT_CANDIDATES.find((candidate) => candidate.paths.some((fontPath) => fs25.existsSync(fontPath)))?.family ?? null;
+  cachedEmojiFontFamily = EMOJI_FONT_CANDIDATES.find((candidate) => candidate.paths.some((fontPath) => fs26.existsSync(fontPath)))?.family ?? null;
   return cachedEmojiFontFamily;
 }
 function emojiFontFamily() {
@@ -36586,7 +36680,7 @@ __export(event_handlers_exports, {
   unregisterSessionOwner: () => unregisterSessionOwner
 });
 import fsp8 from "node:fs/promises";
-import path22 from "path";
+import path23 from "path";
 import crypto13 from "crypto";
 function logForensicLatency(fields) {
   if (!FORENSIC_LATENCY_ENABLED) return;
@@ -38035,8 +38129,8 @@ async function processMessageWithConfig(sessionId, telegramId, msg, socket, repl
       const media = await extractMedia();
       if (media) {
         const filename = `idea_${Date.now()}_${Math.floor(Math.random() * 1e3)}.${media.mimeType.split("/")[1]}`;
-        const filePath = path22.join(process.cwd(), "workspaces", "_platform", "media", filename);
-        await fsp8.mkdir(path22.dirname(filePath), { recursive: true });
+        const filePath = path23.join(process.cwd(), "workspaces", "_platform", "media", filename);
+        await fsp8.mkdir(path23.dirname(filePath), { recursive: true });
         await fsp8.writeFile(filePath, media.buffer);
         attachments.push({ type: media.type, filePath, mimeType: media.mimeType });
       }
@@ -38839,9 +38933,9 @@ Examples: Africa/Lagos, Europe/London, America/New_York`));
         await reply(warningCard("REPLY TO MEDIA", `Reply to a ${expected} with ${config2.prefix}${command}.`));
         break;
       }
-      const dir = path22.join(sessionDir(telegramId, sessionId), "menu-media");
+      const dir = path23.join(sessionDir(telegramId, sessionId), "menu-media");
       await fsp8.mkdir(dir, { recursive: true });
-      const filePath = path22.join(dir, `menu.${expected === "image" ? "jpg" : "mp4"}`);
+      const filePath = path23.join(dir, `menu.${expected === "image" ? "jpg" : "mp4"}`);
       await fsp8.writeFile(filePath, media.buffer);
       updateSessionMeta(telegramId, sessionId, { menuMedia: { type: expected, filePath, mimeType: media.mimeType } });
       await reply(successCard("MENU MEDIA SET", `Menus will now render with this ${expected}.`));
@@ -41137,8 +41231,8 @@ __export(socket_manager_exports, {
 });
 import makeWASocket from "@crysnovax/baileys";
 import * as Baileys from "@crysnovax/baileys";
-import fs26 from "node:fs";
-import path23 from "node:path";
+import fs27 from "node:fs";
+import path24 from "node:path";
 import { Boom } from "@hapi/boom";
 import P from "pino";
 import QRCode from "qrcode";
@@ -41179,12 +41273,12 @@ async function ensureNewsletterMetadata(socket) {
   }
 }
 function groupMetadataCache(sessionId) {
-  let cache = groupMetadataCaches.get(sessionId);
-  if (!cache) {
-    cache = /* @__PURE__ */ new Map();
-    groupMetadataCaches.set(sessionId, cache);
+  let cache2 = groupMetadataCaches.get(sessionId);
+  if (!cache2) {
+    cache2 = /* @__PURE__ */ new Map();
+    groupMetadataCaches.set(sessionId, cache2);
   }
-  return cache;
+  return cache2;
 }
 function clearGroupMetadataCache(sessionId) {
   groupMetadataCaches.delete(sessionId);
@@ -41371,7 +41465,7 @@ function hasRegisteredAuth(sessionId, telegramId) {
   if (!owner) return false;
   try {
     const authDir = sessionAuthDir(owner, sessionId);
-    const creds = JSON.parse(fs26.readFileSync(path23.join(authDir, "creds.json"), "utf8"));
+    const creds = JSON.parse(fs27.readFileSync(path24.join(authDir, "creds.json"), "utf8"));
     return creds.registered === true;
   } catch {
     return false;
@@ -41619,15 +41713,15 @@ async function initSocket(meta, opts = {}) {
   const originalGroupMetadata = socket.groupMetadata.bind(socket);
   socket.groupMetadata = (async (jid) => {
     assertCurrentOperation();
-    const cache = groupMetadataCache(sessionId);
-    const existing2 = cache.get(jid);
+    const cache2 = groupMetadataCache(sessionId);
+    const existing2 = cache2.get(jid);
     if (existing2 && existing2.expiresAt > Date.now()) return existing2.value;
     const value = await originalGroupMetadata(jid);
-    if (cache.size >= GROUP_METADATA_MAX_ENTRIES) {
-      const oldest = cache.keys().next().value;
-      if (oldest) cache.delete(oldest);
+    if (cache2.size >= GROUP_METADATA_MAX_ENTRIES) {
+      const oldest = cache2.keys().next().value;
+      if (oldest) cache2.delete(oldest);
     }
-    cache.set(jid, { value, expiresAt: Date.now() + GROUP_METADATA_TTL_MS });
+    cache2.set(jid, { value, expiresAt: Date.now() + GROUP_METADATA_TTL_MS });
     return value;
   });
   socket.ev.on("creds.update", async (creds) => {
@@ -42254,8 +42348,8 @@ __export(workspace_exports, {
   withWorkspaceMutationLock: () => withWorkspaceMutationLock,
   workspaceDir: () => workspaceDir
 });
-import fs27 from "fs";
-import path24 from "path";
+import fs28 from "fs";
+import path25 from "path";
 import { fileURLToPath as fileURLToPath3 } from "url";
 import os3 from "os";
 import { execFile as execFile4 } from "node:child_process";
@@ -42263,23 +42357,23 @@ import { promisify as promisify4 } from "node:util";
 function migrateLegacyWorkspaces() {
   try {
     const envLegacy = process.env.OMEGA_LEGACY_ROOT?.trim();
-    const defaultRoot = path24.join(os3.homedir(), ".omega-v1", "workspaces");
-    const candidates = envLegacy ? [path24.resolve(envLegacy)] : WORKSPACE_ROOT === defaultRoot ? [
-      path24.resolve(__dirname3, "../../../workspaces"),
+    const defaultRoot = path25.join(os3.homedir(), ".omega-v1", "workspaces");
+    const candidates = envLegacy ? [path25.resolve(envLegacy)] : WORKSPACE_ROOT === defaultRoot ? [
+      path25.resolve(__dirname3, "../../../workspaces"),
       // bundled build: artifacts/workspaces
-      path24.resolve(__dirname3, "../../workspaces")
+      path25.resolve(__dirname3, "../../workspaces")
       // dev/tsx: wa-bridge/workspaces
     ] : [];
     const legacy = candidates.find((c) => {
-      if (c === WORKSPACE_ROOT || !fs27.existsSync(c)) return false;
-      return fs27.readdirSync(c).filter((f) => f !== ".gitkeep").length > 0;
+      if (c === WORKSPACE_ROOT || !fs28.existsSync(c)) return false;
+      return fs28.readdirSync(c).filter((f) => f !== ".gitkeep").length > 0;
     });
     if (!legacy) return;
-    if (fs27.existsSync(WORKSPACE_ROOT) && fs27.readdirSync(WORKSPACE_ROOT).length > 0) return;
-    fs27.mkdirSync(WORKSPACE_ROOT, { recursive: true });
-    for (const entry of fs27.readdirSync(legacy)) {
+    if (fs28.existsSync(WORKSPACE_ROOT) && fs28.readdirSync(WORKSPACE_ROOT).length > 0) return;
+    fs28.mkdirSync(WORKSPACE_ROOT, { recursive: true });
+    for (const entry of fs28.readdirSync(legacy)) {
       if (entry === ".gitkeep") continue;
-      fs27.cpSync(path24.join(legacy, entry), path24.join(WORKSPACE_ROOT, entry), { recursive: true });
+      fs28.cpSync(path25.join(legacy, entry), path25.join(WORKSPACE_ROOT, entry), { recursive: true });
     }
     logger.warn(
       `[Workspace] Migrated session data from legacy in-repo path ${legacy} \u2192 ${WORKSPACE_ROOT}. Sessions are now stored outside the git repository and will survive git pull/reset/clean.`
@@ -42290,63 +42384,63 @@ function migrateLegacyWorkspaces() {
 }
 function ensurePrivatePath(p) {
   try {
-    if (fs27.existsSync(p)) fs27.chmodSync(p, 384);
+    if (fs28.existsSync(p)) fs28.chmodSync(p, 384);
   } catch {
   }
 }
 function atomicWriteJson2(p, data) {
-  fs27.mkdirSync(path24.dirname(p), { recursive: true, mode: 448 });
+  fs28.mkdirSync(path25.dirname(p), { recursive: true, mode: 448 });
   try {
-    fs27.chmodSync(path24.dirname(p), 448);
+    fs28.chmodSync(path25.dirname(p), 448);
   } catch {
   }
   const tmp = `${p}.tmp-${process.pid}`;
-  fs27.writeFileSync(tmp, JSON.stringify(data, null, 2), { mode: 384 });
+  fs28.writeFileSync(tmp, JSON.stringify(data, null, 2), { mode: 384 });
   try {
-    fs27.chmodSync(tmp, 384);
+    fs28.chmodSync(tmp, 384);
   } catch {
   }
-  fs27.renameSync(tmp, p);
+  fs28.renameSync(tmp, p);
   try {
-    fs27.chmodSync(p, 384);
+    fs28.chmodSync(p, 384);
   } catch {
   }
 }
 function workspaceDir(telegramId) {
-  return path24.join(WORKSPACE_ROOT, telegramId);
+  return path25.join(WORKSPACE_ROOT, telegramId);
 }
 function sessionDir(telegramId, sessionId) {
-  return path24.join(workspaceDir(telegramId), "sessions", sessionId);
+  return path25.join(workspaceDir(telegramId), "sessions", sessionId);
 }
 function sessionAuthDir(telegramId, sessionId) {
-  return path24.join(sessionDir(telegramId, sessionId), "auth");
+  return path25.join(sessionDir(telegramId, sessionId), "auth");
 }
 function sessionLogDir(telegramId, sessionId) {
-  return path24.join(sessionDir(telegramId, sessionId), "logs");
+  return path25.join(sessionDir(telegramId, sessionId), "logs");
 }
 function bucketPath(telegramId, bucket) {
-  return path24.join(workspaceDir(telegramId), "buckets", `${bucket}.json`);
+  return path25.join(workspaceDir(telegramId), "buckets", `${bucket}.json`);
 }
 function joinJobsPath(telegramId) {
-  return path24.join(workspaceDir(telegramId), "join-jobs.json");
+  return path25.join(workspaceDir(telegramId), "join-jobs.json");
 }
 function promotionJobsPath(telegramId) {
-  return path24.join(workspaceDir(telegramId), "promotion-jobs.json");
+  return path25.join(workspaceDir(telegramId), "promotion-jobs.json");
 }
 function promotionMediaDir(telegramId) {
-  const dir = path24.join(workspaceDir(telegramId), "promotion-media");
-  fs27.mkdirSync(dir, { recursive: true, mode: 448 });
+  const dir = path25.join(workspaceDir(telegramId), "promotion-media");
+  fs28.mkdirSync(dir, { recursive: true, mode: 448 });
   return dir;
 }
 function promotionMediaPath(telegramId, extension) {
   const safeExtension = String(extension || "bin").replace(/[^a-z0-9]/giu, "").slice(0, 8) || "bin";
-  return path24.join(promotionMediaDir(telegramId), `${Date.now()}-${process.pid}-${Math.random().toString(36).slice(2, 10)}.${safeExtension}`);
+  return path25.join(promotionMediaDir(telegramId), `${Date.now()}-${process.pid}-${Math.random().toString(36).slice(2, 10)}.${safeExtension}`);
 }
 function joinStatePath(telegramId) {
-  return path24.join(workspaceDir(telegramId), "join-state.json");
+  return path25.join(workspaceDir(telegramId), "join-state.json");
 }
 function masterGenerationPath(telegramId) {
-  return path24.join(workspaceDir(telegramId), "master-generation.json");
+  return path25.join(workspaceDir(telegramId), "master-generation.json");
 }
 function currentMasterGeneration(telegramId) {
   const value = readJsonFile(masterGenerationPath(telegramId), 1);
@@ -42363,7 +42457,7 @@ function normalizeCollectedLink(rawLink) {
   return match?.[1] ? `https://chat.whatsapp.com/${match[1]}` : input2.replace(/[?#].*$/u, "").replace(/\/$/u, "");
 }
 function configPath2(telegramId) {
-  return path24.join(workspaceDir(telegramId), "config.json");
+  return path25.join(workspaceDir(telegramId), "config.json");
 }
 function defaultConfig(telegramId) {
   return {
@@ -42414,7 +42508,7 @@ function defaultConfig(telegramId) {
 function initWorkspace(telegramId) {
   const dir = workspaceDir(telegramId);
   for (const sub of ["sessions", "buckets", "exports"]) {
-    fs27.mkdirSync(path24.join(dir, sub), { recursive: true });
+    fs28.mkdirSync(path25.join(dir, sub), { recursive: true });
   }
   const config2 = defaultConfig(telegramId);
   const workspace = {
@@ -42438,7 +42532,7 @@ function initWorkspace(telegramId) {
 }
 function loadWorkspace(telegramId) {
   const dir = workspaceDir(telegramId);
-  if (!fs27.existsSync(dir)) {
+  if (!fs28.existsSync(dir)) {
     return initWorkspace(telegramId);
   }
   const config2 = loadConfig(telegramId);
@@ -42461,10 +42555,10 @@ function loadWorkspace(telegramId) {
 }
 function loadConfig(telegramId) {
   const p = configPath2(telegramId);
-  if (!fs27.existsSync(p)) return defaultConfig(telegramId);
+  if (!fs28.existsSync(p)) return defaultConfig(telegramId);
   ensurePrivatePath(p);
   try {
-    const stored = JSON.parse(fs27.readFileSync(p, "utf8"));
+    const stored = JSON.parse(fs28.readFileSync(p, "utf8"));
     return { ...defaultConfig(telegramId), ...stored, sudoNumbers: stored.sudoNumbers ?? [], forceJoinTargets: stored.forceJoinTargets ?? [], ownerWaNumbers: stored.ownerWaNumbers ?? [], trustedAdminNumbers: stored.trustedAdminNumbers ?? [] };
   } catch {
     return defaultConfig(telegramId);
@@ -42480,7 +42574,7 @@ function updateConfig(telegramId, patch) {
   return updated;
 }
 function sessionConfigPath(telegramId, sessionId) {
-  return path24.join(sessionDir(telegramId, sessionId), "config.json");
+  return path25.join(sessionDir(telegramId, sessionId), "config.json");
 }
 function loadSessionConfig(telegramId, sessionId) {
   const base = loadConfig(telegramId);
@@ -42497,7 +42591,7 @@ function loadSessionConfig(telegramId, sessionId) {
   };
   const globalSudo = getGlobalSudoNumbers(telegramId);
   const mergedSudo = [.../* @__PURE__ */ new Set([...base.sudoNumbers ?? [], ...storedSudoNumbers(telegramId, sessionId, p), ...globalSudo])];
-  if (!fs27.existsSync(p)) {
+  if (!fs28.existsSync(p)) {
     return {
       ...base,
       ...isolatedDefaults,
@@ -42519,7 +42613,7 @@ function loadSessionConfig(telegramId, sessionId) {
   }
   try {
     ensurePrivatePath(p);
-    const stored = JSON.parse(fs27.readFileSync(p, "utf8"));
+    const stored = JSON.parse(fs28.readFileSync(p, "utf8"));
     return {
       ...base,
       ...isolatedDefaults,
@@ -42560,8 +42654,8 @@ function loadSessionConfig(telegramId, sessionId) {
 }
 function storedSudoNumbers(telegramId, sessionId, p) {
   try {
-    if (!fs27.existsSync(p)) return [];
-    const stored = JSON.parse(fs27.readFileSync(p, "utf8"));
+    if (!fs28.existsSync(p)) return [];
+    const stored = JSON.parse(fs28.readFileSync(p, "utf8"));
     return stored.sudoNumbers ?? [];
   } catch {
     return [];
@@ -42681,13 +42775,13 @@ function updateSessionConfig(telegramId, sessionId, patch) {
   return updated;
 }
 function sessionMetaPath(telegramId, sessionId) {
-  return path24.join(sessionDir(telegramId, sessionId), "meta.json");
+  return path25.join(sessionDir(telegramId, sessionId), "meta.json");
 }
 function saveSessionMeta(meta) {
   const dir = sessionDir(meta.telegramId, meta.sessionId);
-  fs27.mkdirSync(dir, { recursive: true });
-  fs27.mkdirSync(sessionAuthDir(meta.telegramId, meta.sessionId), { recursive: true });
-  fs27.mkdirSync(sessionLogDir(meta.telegramId, meta.sessionId), { recursive: true });
+  fs28.mkdirSync(dir, { recursive: true });
+  fs28.mkdirSync(sessionAuthDir(meta.telegramId, meta.sessionId), { recursive: true });
+  fs28.mkdirSync(sessionLogDir(meta.telegramId, meta.sessionId), { recursive: true });
   atomicWriteJson2(sessionMetaPath(meta.telegramId, meta.sessionId), meta);
   const owners = sessionOwnerIndex.get(meta.sessionId) ?? /* @__PURE__ */ new Set();
   owners.add(meta.telegramId);
@@ -42695,9 +42789,9 @@ function saveSessionMeta(meta) {
 }
 function loadSessionMeta(telegramId, sessionId) {
   const p = sessionMetaPath(telegramId, sessionId);
-  if (!fs27.existsSync(p)) return null;
+  if (!fs28.existsSync(p)) return null;
   try {
-    const stored = JSON.parse(fs27.readFileSync(p, "utf8"));
+    const stored = JSON.parse(fs28.readFileSync(p, "utf8"));
     let status = stored.status;
     if (status === "connecting") status = "CONNECTING";
     if (status === "reconnecting") status = "RECONNECTING";
@@ -42724,10 +42818,10 @@ function loadSessionMeta(telegramId, sessionId) {
   }
 }
 function loadAllSessions(telegramId) {
-  const sessDir = path24.join(workspaceDir(telegramId), "sessions");
-  if (!fs27.existsSync(sessDir)) return {};
+  const sessDir = path25.join(workspaceDir(telegramId), "sessions");
+  if (!fs28.existsSync(sessDir)) return {};
   const sessions2 = {};
-  for (const entry of fs27.readdirSync(sessDir, { withFileTypes: true })) {
+  for (const entry of fs28.readdirSync(sessDir, { withFileTypes: true })) {
     if (!entry.isDirectory()) continue;
     const meta = loadSessionMeta(telegramId, entry.name);
     if (meta) sessions2[entry.name] = meta;
@@ -42736,9 +42830,9 @@ function loadAllSessions(telegramId) {
 }
 function loadAllSessionsGlobally() {
   try {
-    if (!fs27.existsSync(WORKSPACE_ROOT)) return [];
+    if (!fs28.existsSync(WORKSPACE_ROOT)) return [];
     const all = [];
-    for (const entry of fs27.readdirSync(WORKSPACE_ROOT, { withFileTypes: true })) {
+    for (const entry of fs28.readdirSync(WORKSPACE_ROOT, { withFileTypes: true })) {
       if (!entry.isDirectory() || entry.name === "_platform") continue;
       const sessions2 = loadAllSessions(entry.name);
       for (const [sessionId, meta] of Object.entries(sessions2)) {
@@ -42789,12 +42883,12 @@ function releaseSessionNotification(telegramId, sessionId) {
 async function purgeMetadataLessOrphan(telegramId, sessionId) {
   const dir = sessionDir(telegramId, sessionId);
   const metaPath = sessionMetaPath(telegramId, sessionId);
-  if (loadSessionMeta(telegramId, sessionId) || fs27.existsSync(metaPath) || !fs27.existsSync(dir)) return false;
+  if (loadSessionMeta(telegramId, sessionId) || fs28.existsSync(metaPath) || !fs28.existsSync(dir)) return false;
   const authDir = sessionAuthDir(telegramId, sessionId);
   const hasFilesRecursively = (current) => {
-    if (!fs27.existsSync(current)) return false;
-    for (const entry of fs27.readdirSync(current, { withFileTypes: true })) {
-      const child = path24.join(current, entry.name);
+    if (!fs28.existsSync(current)) return false;
+    for (const entry of fs28.readdirSync(current, { withFileTypes: true })) {
+      const child = path25.join(current, entry.name);
       if (entry.isFile() || entry.isSymbolicLink()) return true;
       if (entry.isDirectory() && hasFilesRecursively(child)) return true;
     }
@@ -42808,7 +42902,7 @@ async function purgeMetadataLessOrphan(telegramId, sessionId) {
   } catch {
   }
   if (hasRuntimeSocket) return false;
-  fs27.rmSync(dir, { recursive: true, force: true });
+  fs28.rmSync(dir, { recursive: true, force: true });
   logger.warn("[PurgeEngine] Removed verified metadata-less orphan tree", { telegramId, sessionId });
   return true;
 }
@@ -42929,9 +43023,9 @@ async function purgeSession(telegramId, sessionId) {
       logger.warn(`[PurgeEngine] Runtime cleanup failed for ${sessionId}`, { err: String(err) });
     }
     logger.info(`[PurgeEngine] Resetting delivery flags for ${sessionId}`);
-    if (fs27.existsSync(dir)) {
+    if (fs28.existsSync(dir)) {
       try {
-        fs27.rmSync(dir, { recursive: true, force: true });
+        fs28.rmSync(dir, { recursive: true, force: true });
         logger.info(`[PurgeEngine] Session directory removed: ${dir}`);
       } catch (err) {
         logger.error(`[PurgeEngine] Failed to remove directory ${dir}`, { err: String(err) });
@@ -42955,12 +43049,12 @@ async function purgeSession(telegramId, sessionId) {
 async function purgeAllSessions(telegramId) {
   const sessions2 = Object.values(loadAllSessions(telegramId));
   await Promise.all(sessions2.map((meta) => purgeSession(telegramId, meta.sessionId)));
-  const sessDir = path24.join(workspaceDir(telegramId), "sessions");
-  if (fs27.existsSync(sessDir)) {
-    for (const entry of fs27.readdirSync(sessDir, { withFileTypes: true })) {
+  const sessDir = path25.join(workspaceDir(telegramId), "sessions");
+  if (fs28.existsSync(sessDir)) {
+    for (const entry of fs28.readdirSync(sessDir, { withFileTypes: true })) {
       if (entry.isDirectory()) {
         try {
-          fs27.rmSync(path24.join(sessDir, entry.name), { recursive: true, force: true });
+          fs28.rmSync(path25.join(sessDir, entry.name), { recursive: true, force: true });
         } catch {
         }
       }
@@ -42969,19 +43063,19 @@ async function purgeAllSessions(telegramId) {
   logger.warn(`[Workspace] Purged all sessions for ${telegramId}`, { count: sessions2.length });
 }
 function withWorkspaceMutationLock(telegramId, work) {
-  const lockPath = path24.join(workspaceDir(telegramId), ".buckets.lock");
-  fs27.mkdirSync(workspaceDir(telegramId), { recursive: true, mode: 448 });
+  const lockPath = path25.join(workspaceDir(telegramId), ".buckets.lock");
+  fs28.mkdirSync(workspaceDir(telegramId), { recursive: true, mode: 448 });
   let fd;
   try {
-    fd = fs27.openSync(lockPath, "wx", 384);
-    fs27.writeSync(fd, `${process.pid}:${Date.now()}`);
+    fd = fs28.openSync(lockPath, "wx", 384);
+    fs28.writeSync(fd, `${process.pid}:${Date.now()}`);
   } catch (error2) {
     if (error2.code !== "EEXIST") throw error2;
     let reclaimed = false;
     try {
-      const stat = fs27.statSync(lockPath);
+      const stat = fs28.statSync(lockPath);
       if (Date.now() - stat.mtimeMs > BUCKET_LOCK_TTL_MS) {
-        fs27.rmSync(lockPath, { force: true });
+        fs28.rmSync(lockPath, { force: true });
         reclaimed = true;
       }
     } catch (statError) {
@@ -42990,8 +43084,8 @@ function withWorkspaceMutationLock(telegramId, work) {
     }
     if (reclaimed) {
       try {
-        fd = fs27.openSync(lockPath, "wx", 384);
-        fs27.writeSync(fd, `${process.pid}:${Date.now()}`);
+        fd = fs28.openSync(lockPath, "wx", 384);
+        fs28.writeSync(fd, `${process.pid}:${Date.now()}`);
       } catch (retryError) {
         if (retryError.code !== "EEXIST") throw retryError;
       }
@@ -43004,11 +43098,11 @@ function withWorkspaceMutationLock(telegramId, work) {
     return work();
   } finally {
     try {
-      fs27.closeSync(fd);
+      fs28.closeSync(fd);
     } catch {
     }
     try {
-      fs27.rmSync(lockPath, { force: true });
+      fs28.rmSync(lockPath, { force: true });
     } catch {
     }
   }
@@ -43046,9 +43140,9 @@ function normalizeEntry(entry) {
 }
 function loadBucket(telegramId, bucket) {
   const p = bucketPath(telegramId, bucket);
-  if (!fs27.existsSync(p)) return [];
+  if (!fs28.existsSync(p)) return [];
   try {
-    const parsed = JSON.parse(fs27.readFileSync(p, "utf8"));
+    const parsed = JSON.parse(fs28.readFileSync(p, "utf8"));
     return Array.isArray(parsed) ? parsed.filter((entry) => Boolean(entry && typeof entry === "object")).map(normalizeEntry) : [];
   } catch {
     return [];
@@ -43080,9 +43174,9 @@ function retireActiveLink(telegramId, linkOrKey, details) {
   });
 }
 function readJsonFile(file, fallback) {
-  if (!fs27.existsSync(file)) return fallback;
+  if (!fs28.existsSync(file)) return fallback;
   try {
-    const value = JSON.parse(fs27.readFileSync(file, "utf8"));
+    const value = JSON.parse(fs28.readFileSync(file, "utf8"));
     return value;
   } catch {
     return fallback;
@@ -43634,13 +43728,13 @@ function moveToErrorBucket(telegramId, entries) {
   });
 }
 function exportDir(telegramId) {
-  const dir = path24.join(workspaceDir(telegramId), "exports");
-  fs27.mkdirSync(dir, { recursive: true });
+  const dir = path25.join(workspaceDir(telegramId), "exports");
+  fs28.mkdirSync(dir, { recursive: true });
   return dir;
 }
 function getAllUserIds() {
-  if (!fs27.existsSync(WORKSPACE_ROOT)) return [];
-  return fs27.readdirSync(WORKSPACE_ROOT, { withFileTypes: true }).filter((d) => d.isDirectory() && d.name !== "_platform").map((d) => d.name);
+  if (!fs28.existsSync(WORKSPACE_ROOT)) return [];
+  return fs28.readdirSync(WORKSPACE_ROOT, { withFileTypes: true }).filter((d) => d.isDirectory() && d.name !== "_platform").map((d) => d.name);
 }
 function loadPlatformSessions2() {
   return getAllUserIds().flatMap((telegramId) => Object.values(loadAllSessions(telegramId)));
@@ -43660,9 +43754,9 @@ function findSessionOwner(sessionId) {
   return null;
 }
 function loadPlatformConfig() {
-  if (!fs27.existsSync(PLATFORM_CONFIG_PATH)) return {};
+  if (!fs28.existsSync(PLATFORM_CONFIG_PATH)) return {};
   try {
-    return JSON.parse(fs27.readFileSync(PLATFORM_CONFIG_PATH, "utf8"));
+    return JSON.parse(fs28.readFileSync(PLATFORM_CONFIG_PATH, "utf8"));
   } catch {
     return {};
   }
@@ -43680,8 +43774,8 @@ function updatePlatformConfig(patch) {
           const rawPath = sessionConfigPath(telegramId, meta.sessionId);
           let explicitSudo = [];
           try {
-            if (fs27.existsSync(rawPath)) {
-              const raw = JSON.parse(fs27.readFileSync(rawPath, "utf8"));
+            if (fs28.existsSync(rawPath)) {
+              const raw = JSON.parse(fs28.readFileSync(rawPath, "utf8"));
               explicitSudo = raw.sudoNumbers ?? [];
             }
           } catch {
@@ -43702,7 +43796,7 @@ function updatePlatformConfig(patch) {
       for (const meta of Object.values(loadAllSessions(telegramId))) {
         const metaPath = sessionMetaPath(telegramId, meta.sessionId);
         try {
-          const raw = JSON.parse(fs27.readFileSync(metaPath, "utf8"));
+          const raw = JSON.parse(fs28.readFileSync(metaPath, "utf8"));
           if (raw.linkCollectionEnabled === void 0) {
             saveSessionMeta({
               ...meta,
@@ -43768,11 +43862,11 @@ var init_workspace = __esm({
     init_builtin_owner_policy();
     init_session_lifecycle();
     execFileAsync4 = promisify4(execFile4);
-    __dirname3 = path24.dirname(fileURLToPath3(import.meta.url));
+    __dirname3 = path25.dirname(fileURLToPath3(import.meta.url));
     WORKSPACE_ROOT = (() => {
       const envRoot = process.env.WORKSPACE_ROOT ?? process.env.OMEGA_DATA_DIR;
-      if (envRoot) return path24.resolve(envRoot);
-      return path24.join(os3.homedir(), ".omega-v1", "workspaces");
+      if (envRoot) return path25.resolve(envRoot);
+      return path25.join(os3.homedir(), ".omega-v1", "workspaces");
     })();
     sessionOwnerIndex = /* @__PURE__ */ new Map();
     migrateLegacyWorkspaces();
@@ -43781,7 +43875,7 @@ var init_workspace = __esm({
     BUCKET_LOCK_TTL_MS = 6e4;
     MAX_MERGE_ATTEMPTS = 3;
     MERGE_VALIDATION_LEASE_TTL_MS = 5 * 6e4;
-    PLATFORM_CONFIG_PATH = path24.join(WORKSPACE_ROOT, "_platform", "config.json");
+    PLATFORM_CONFIG_PATH = path25.join(WORKSPACE_ROOT, "_platform", "config.json");
   }
 });
 
@@ -43790,8 +43884,8 @@ var HealthReporter_exports = {};
 __export(HealthReporter_exports, {
   HealthReporter: () => HealthReporter
 });
-import fs35 from "fs";
-import path31 from "path";
+import fs36 from "fs";
+import path32 from "path";
 var HealthReporter;
 var init_HealthReporter = __esm({
   "src/utils/HealthReporter.ts"() {
@@ -43847,10 +43941,10 @@ var init_HealthReporter = __esm({
         const results = [];
         const requiredDirs = ["logs", "sessions", "dist"];
         for (const dir of requiredDirs) {
-          const fullPath = path31.resolve(process.cwd(), dir);
-          if (!fs35.existsSync(fullPath)) {
+          const fullPath = path32.resolve(process.cwd(), dir);
+          if (!fs36.existsSync(fullPath)) {
             results.push({ component: `Dir: ${dir}`, status: "error", message: "Missing" });
-          } else if (!fs35.lstatSync(fullPath).isDirectory()) {
+          } else if (!fs36.lstatSync(fullPath).isDirectory()) {
             results.push({ component: `Dir: ${dir}`, status: "error", message: "Not a directory" });
           } else {
             results.push({ component: `Dir: ${dir}`, status: "ok" });
@@ -43865,43 +43959,43 @@ var init_HealthReporter = __esm({
 // src/index.ts
 import "dotenv/config";
 import PQueue4 from "p-queue";
-import fs36 from "fs";
-import path32 from "path";
+import fs37 from "fs";
+import path33 from "path";
 
 // src/web/server.ts
 import express from "express";
-import fs29 from "fs";
-import path26 from "path";
+import fs30 from "fs";
+import path27 from "path";
 import { fileURLToPath as fileURLToPath4 } from "url";
 import multer from "multer";
 
 // src/web/auth.ts
 init_workspace();
 import crypto14 from "crypto";
-import fs28 from "fs";
-import path25 from "path";
-var AUTH_DIR = path25.join(WORKSPACE_ROOT, "_web_auth");
-var USERS_FILE = path25.join(AUTH_DIR, "users.json");
-var SESSIONS_FILE = path25.join(AUTH_DIR, "sessions.json");
+import fs29 from "fs";
+import path26 from "path";
+var AUTH_DIR = path26.join(WORKSPACE_ROOT, "_web_auth");
+var USERS_FILE = path26.join(AUTH_DIR, "users.json");
+var SESSIONS_FILE = path26.join(AUTH_DIR, "sessions.json");
 var ITERATIONS = 21e4;
 var KEYLEN = 32;
 var DIGEST = "sha512";
 function ensureStore() {
-  fs28.mkdirSync(AUTH_DIR, { recursive: true });
-  if (!fs28.existsSync(USERS_FILE)) fs28.writeFileSync(USERS_FILE, "{}");
-  if (!fs28.existsSync(SESSIONS_FILE)) fs28.writeFileSync(SESSIONS_FILE, "{}");
+  fs29.mkdirSync(AUTH_DIR, { recursive: true });
+  if (!fs29.existsSync(USERS_FILE)) fs29.writeFileSync(USERS_FILE, "{}");
+  if (!fs29.existsSync(SESSIONS_FILE)) fs29.writeFileSync(SESSIONS_FILE, "{}");
 }
 function readJson3(file, fallback) {
   ensureStore();
   try {
-    return JSON.parse(fs28.readFileSync(file, "utf8"));
+    return JSON.parse(fs29.readFileSync(file, "utf8"));
   } catch {
     return fallback;
   }
 }
 function writeJson(file, data) {
   ensureStore();
-  fs28.writeFileSync(file, JSON.stringify(data, null, 2));
+  fs29.writeFileSync(file, JSON.stringify(data, null, 2));
 }
 function userId(username) {
   return `web_${crypto14.createHash("sha256").update(username.toLowerCase()).digest("hex").slice(0, 20)}`;
@@ -43920,7 +44014,7 @@ function createWebUser(username, password) {
   const secret = hashPassword(password);
   users[clean4] = { id, username: clean4, ...secret, createdAt: Date.now() };
   writeJson(USERS_FILE, users);
-  fs28.mkdirSync(workspaceDir(id), { recursive: true });
+  fs29.mkdirSync(workspaceDir(id), { recursive: true });
   const { passwordHash, salt, ...safeUser } = users[clean4];
   void passwordHash;
   void salt;
@@ -44324,14 +44418,14 @@ function normalizeRemoteText(text2) {
 }
 
 // src/web/server.ts
-var __dirname4 = path26.dirname(fileURLToPath4(import.meta.url));
+var __dirname4 = path27.dirname(fileURLToPath4(import.meta.url));
 var botRef = null;
 function setBotReference(bot) {
   botRef = bot;
 }
-var bundledPublicDir = path26.resolve(__dirname4, "public");
-var sourcePublicDir = path26.resolve(__dirname4, "../public");
-var publicDir = fs29.existsSync(path26.join(bundledPublicDir, "index.html")) ? bundledPublicDir : sourcePublicDir;
+var bundledPublicDir = path27.resolve(__dirname4, "public");
+var sourcePublicDir = path27.resolve(__dirname4, "../public");
+var publicDir = fs30.existsSync(path27.join(bundledPublicDir, "index.html")) ? bundledPublicDir : sourcePublicDir;
 var logs = /* @__PURE__ */ new Map();
 var pairing = /* @__PURE__ */ new Map();
 var clients = /* @__PURE__ */ new Map();
@@ -45649,7 +45743,7 @@ function createWebApp() {
     const file = req.file;
     try {
       if (!file) throw new Error("A TXT, CSV, or JSON file is required");
-      const extension = path26.extname(file.originalname || "").toLowerCase();
+      const extension = path27.extname(file.originalname || "").toLowerCase();
       if (![".txt", ".csv", ".json"].includes(extension)) throw new Error("Only TXT, CSV, and JSON link files are supported");
       const result = importLinksToMainBucket(userId2, file.buffer.toString("utf8"));
       emit(userId2, `Uploaded ${file.originalname}: ${result.added} links added (${result.dupes} duplicates)`);
@@ -45736,9 +45830,9 @@ function createWebApp() {
     try {
       assertSessionOwner(userId2, sessionId);
       if (!file) throw new Error("Promotion media is required");
-      const extension = path26.extname(file.originalname || "").replace(/[^a-z0-9.]/giu, "").slice(0, 8) || ".bin";
-      storedPath = path26.join(promotionMediaDir(userId2), `${Date.now()}-${Math.random().toString(36).slice(2, 10)}${extension}`);
-      fs29.writeFileSync(storedPath, file.buffer, { mode: 384 });
+      const extension = path27.extname(file.originalname || "").replace(/[^a-z0-9.]/giu, "").slice(0, 8) || ".bin";
+      storedPath = path27.join(promotionMediaDir(userId2), `${Date.now()}-${Math.random().toString(36).slice(2, 10)}${extension}`);
+      fs30.writeFileSync(storedPath, file.buffer, { mode: 384 });
       const targetText = String(req.body?.targets ?? "");
       let targets = [];
       try {
@@ -45753,7 +45847,7 @@ function createWebApp() {
       emit(userId2, `Promotion campaign ${job.id} created with media`);
       res.json({ job: { ...job, content: { ...job.content, mediaPath: void 0 } } });
     } catch (err) {
-      if (storedPath) fs29.rmSync(storedPath, { force: true });
+      if (storedPath) fs30.rmSync(storedPath, { force: true });
       res.status(400).json({ error: err instanceof Error ? err.message : "Promotion media workflow failed" });
     }
   });
@@ -45765,9 +45859,9 @@ function createWebApp() {
     try {
       assertSessionOwner(userId2, sessionId);
       if (!file) throw new Error("Plugin file is required");
-      tempDir = fs29.mkdtempSync(path26.join("/tmp", "omega-plugin-"));
-      const source = path26.join(tempDir, file.originalname || "plugin");
-      fs29.writeFileSync(source, file.buffer, { mode: 384 });
+      tempDir = fs30.mkdtempSync(path27.join("/tmp", "omega-plugin-"));
+      const source = path27.join(tempDir, file.originalname || "plugin");
+      fs30.writeFileSync(source, file.buffer, { mode: 384 });
       const manifest = await pluginEngine.installFromFile(userId2, sessionId, source, { originalFileName: file.originalname, mimeType: file.mimetype, pluginId: String(req.body?.pluginId ?? "").trim() || void 0, enabled: req.body?.enabled !== "false" });
       emit(userId2, `Plugin ${manifest.id} installed on ${sessionId}`);
       const manifests = await pluginEngine.list(userId2, sessionId);
@@ -45775,7 +45869,7 @@ function createWebApp() {
     } catch (err) {
       res.status(400).json({ error: err instanceof Error ? err.message : "Plugin installation failed" });
     } finally {
-      if (tempDir) fs29.rmSync(tempDir, { recursive: true, force: true });
+      if (tempDir) fs30.rmSync(tempDir, { recursive: true, force: true });
     }
   });
   app.post("/api/sessions/:id/pfp", requireAuth, upload.single("image"), async (req, res) => {
@@ -46023,9 +46117,9 @@ ${message}`);
     const platform = String(req.body?.platform ?? "web").slice(0, 32);
     try {
       if (!text2 || text2.length > 4e3) throw new Error("Idea must be between 1 and 4000 characters");
-      const dir = path26.join(WORKSPACE_ROOT, userId2);
-      fs29.mkdirSync(dir, { recursive: true, mode: 448 });
-      fs29.appendFileSync(path26.join(dir, "web-ideas.jsonl"), `${JSON.stringify({ text: text2, platform, at: Date.now() })}
+      const dir = path27.join(WORKSPACE_ROOT, userId2);
+      fs30.mkdirSync(dir, { recursive: true, mode: 448 });
+      fs30.appendFileSync(path27.join(dir, "web-ideas.jsonl"), `${JSON.stringify({ text: text2, platform, at: Date.now() })}
 `, { mode: 384 });
       emit(userId2, "Idea saved for Omega product review");
       res.json({ ok: true });
@@ -46236,7 +46330,7 @@ ${message}`);
         }
       }
     }));
-    app.get("/{*path}", (_, res) => res.sendFile(path26.join(publicDir, "index.html")));
+    app.get("/{*path}", (_, res) => res.sendFile(path27.join(publicDir, "index.html")));
   } else {
     app.get("/", (_req, res) => res.status(404).json({ error: "Customer dashboard is not exposed." }));
   }
@@ -46757,8 +46851,8 @@ function startAllStatusWorker() {
 init_logger();
 init_workspace();
 init_socket_manager();
-import fs30 from "fs";
-import path27 from "path";
+import fs31 from "fs";
+import path28 from "path";
 var CLEANUP_INTERVAL_MS = 5 * 60 * 1e3;
 var PAIRING_TIMEOUT_MS = 10 * 60 * 1e3;
 var SYSTEM_FREEZE_TTL_MS = 24 * 60 * 60 * 1e3;
@@ -46790,7 +46884,7 @@ async function runSessionCleanup() {
         reason = "Marked as purged";
       }
       if (status === "FROZEN") {
-        const hasCreds = fs30.existsSync(path27.join(sessionAuthDir(telegramId, sessionId), "creds.json"));
+        const hasCreds = fs31.existsSync(path28.join(sessionAuthDir(telegramId, sessionId), "creds.json"));
         const freezeAge = Date.now() - (meta.freezeAt ?? meta.lastSeen ?? Date.now());
         if (freezeAge > SYSTEM_FREEZE_TTL_MS && !hasCreds) {
           logger.warn("[SessionCleaner] Frozen orphan candidate (report-only)", {
@@ -46803,7 +46897,7 @@ async function runSessionCleanup() {
       }
       if (status === "ACTIVE") {
         const authDir = sessionAuthDir(telegramId, sessionId);
-        if (!fs30.existsSync(path27.join(authDir, "creds.json"))) {
+        if (!fs31.existsSync(path28.join(authDir, "creds.json"))) {
           logger.warn(
             `[SessionCleaner] ACTIVE session ${sessionId} is missing creds.json \u2014 NOT purging (Baileys will handle this via auth error). Investigate if this persists.`
           );
@@ -46862,15 +46956,15 @@ init_session_health();
 // src/services/runtime-lease.ts
 init_workspace();
 init_logger();
-import fs31 from "node:fs";
+import fs32 from "node:fs";
 import os4 from "node:os";
-import path28 from "node:path";
-var leasePath = path28.join(WORKSPACE_ROOT, ".omega-runtime-lease.json");
+import path29 from "node:path";
+var leasePath = path29.join(WORKSPACE_ROOT, ".omega-runtime-lease.json");
 var heartbeatTimer;
 var owned = false;
 function readLease() {
   try {
-    return JSON.parse(fs31.readFileSync(leasePath, "utf8"));
+    return JSON.parse(fs32.readFileSync(leasePath, "utf8"));
   } catch {
     return void 0;
   }
@@ -46885,14 +46979,14 @@ function pidAlive(pid) {
   }
 }
 function writeLease(lease) {
-  fs31.mkdirSync(WORKSPACE_ROOT, { recursive: true, mode: 448 });
+  fs32.mkdirSync(WORKSPACE_ROOT, { recursive: true, mode: 448 });
   const temp = `${leasePath}.${process.pid}.tmp`;
-  fs31.writeFileSync(temp, JSON.stringify(lease), { mode: 384 });
-  fs31.renameSync(temp, leasePath);
+  fs32.writeFileSync(temp, JSON.stringify(lease), { mode: 384 });
+  fs32.renameSync(temp, leasePath);
 }
 function acquireRuntimeLease() {
   if (owned) return;
-  fs31.mkdirSync(WORKSPACE_ROOT, { recursive: true, mode: 448 });
+  fs32.mkdirSync(WORKSPACE_ROOT, { recursive: true, mode: 448 });
   const existing = readLease();
   if (existing && existing.pid !== process.pid && pidAlive(existing.pid)) {
     throw new Error(
@@ -46902,7 +46996,7 @@ function acquireRuntimeLease() {
   if (existing) {
     logger.warn("[RuntimeLease] Removing stale runtime lease", { pid: existing.pid, role: existing.role });
     try {
-      fs31.unlinkSync(leasePath);
+      fs32.unlinkSync(leasePath);
     } catch {
     }
   }
@@ -46936,7 +47030,7 @@ function releaseRuntimeLease() {
   const current = readLease();
   if (current?.pid === process.pid) {
     try {
-      fs31.unlinkSync(leasePath);
+      fs32.unlinkSync(leasePath);
     } catch {
     }
   }
@@ -47077,8 +47171,8 @@ import {
   MonolithWorkloadAdapter
 } from "@omega/client/library";
 import crypto16 from "node:crypto";
-import fs32 from "node:fs";
-import path29 from "node:path";
+import fs33 from "node:fs";
+import path30 from "node:path";
 var runtime;
 function iso(value, fallback = (/* @__PURE__ */ new Date()).toISOString()) {
   if (typeof value === "number" && Number.isFinite(value)) return new Date(value).toISOString();
@@ -47244,22 +47338,22 @@ function sourceFor(workspaceId, deploymentId) {
     }
   };
 }
-function installationFilePath() {
-  const workspaceRoot = path29.resolve(process.env.OMEGA_WORKSPACE_ROOT?.trim() || path29.join(process.cwd(), "workspace"));
-  return path29.resolve(process.env.OMEGA_INSTALLATION_FILE?.trim() || path29.join(workspaceRoot, "installation.json"));
+function installationFilePath2() {
+  const workspaceRoot = path30.resolve(process.env.OMEGA_WORKSPACE_ROOT?.trim() || path30.join(process.cwd(), "workspace"));
+  return path30.resolve(process.env.OMEGA_INSTALLATION_FILE?.trim() || path30.join(workspaceRoot, "installation.json"));
 }
 function loadOrCreateInstallationIdentity() {
-  const filePath = installationFilePath();
+  const filePath = installationFilePath2();
   const agentVersion = process.env.OMEGA_AGENT_VERSION?.trim() || "1.2.0";
   const persist = (identity) => {
-    fs32.mkdirSync(path29.dirname(filePath), { recursive: true, mode: 448 });
+    fs33.mkdirSync(path30.dirname(filePath), { recursive: true, mode: 448 });
     const temporary = `${filePath}.${process.pid}.tmp`;
-    fs32.writeFileSync(temporary, `${JSON.stringify(identity, null, 2)}\\n`, { mode: 384 });
-    fs32.renameSync(temporary, filePath);
+    fs33.writeFileSync(temporary, `${JSON.stringify(identity, null, 2)}\\n`, { mode: 384 });
+    fs33.renameSync(temporary, filePath);
     return identity;
   };
   try {
-    const value = JSON.parse(fs32.readFileSync(filePath, "utf8"));
+    const value = JSON.parse(fs33.readFileSync(filePath, "utf8"));
     if (value.clientId && value.deploymentId && value.workspaceId) {
       const identity = value;
       if (identity.agentVersion !== agentVersion) return persist({ ...identity, agentVersion });
@@ -47314,8 +47408,8 @@ async function stopPterodactylClientBridge() {
 }
 
 // src/setup/customer-runtime.ts
-import fs33 from "node:fs";
-import path30 from "node:path";
+import fs34 from "node:fs";
+import path31 from "node:path";
 import readline from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 
@@ -47446,7 +47540,7 @@ var CustomerStartupConsole = class {
 var customerStartup = new CustomerStartupConsole();
 
 // src/setup/customer-runtime.ts
-var MARKER = path30.resolve(process.env.OMEGA_CUSTOMER_SETUP_MARKER?.trim() || "./.omega-customer-setup.json");
+var MARKER = path31.resolve(process.env.OMEGA_CUSTOMER_SETUP_MARKER?.trim() || "./.omega-customer-setup.json");
 var CUSTOMER_MODE2 = process.env.OMEGA_CUSTOMER_RUNTIME === "true" || process.env.OMEGA_PLATFORM === "pterodactyl";
 var BUILTIN_OWNER_ID = "8831887192";
 var RESET = "\x1B[0m";
@@ -47468,7 +47562,7 @@ function masked(value) {
 }
 function setupMarker() {
   try {
-    return JSON.parse(fs33.readFileSync(MARKER, "utf8"));
+    return JSON.parse(fs34.readFileSync(MARKER, "utf8"));
   } catch {
     return {};
   }
@@ -47482,12 +47576,12 @@ async function savedWhatsAppSessionExists() {
   }
 }
 function saveMarker(values) {
-  fs33.mkdirSync(path30.dirname(MARKER), { recursive: true, mode: 448 });
-  fs33.writeFileSync(MARKER, JSON.stringify({ version: 2, completedAt: (/* @__PURE__ */ new Date()).toISOString(), ...values }, null, 2), { mode: 384 });
+  fs34.mkdirSync(path31.dirname(MARKER), { recursive: true, mode: 448 });
+  fs34.writeFileSync(MARKER, JSON.stringify({ version: 2, completedAt: (/* @__PURE__ */ new Date()).toISOString(), ...values }, null, 2), { mode: 384 });
 }
 function persistEnv(values) {
-  const envPath = path30.resolve(".env");
-  const current = fs33.existsSync(envPath) ? fs33.readFileSync(envPath, "utf8").split(/\r?\n/u) : [];
+  const envPath = path31.resolve(".env");
+  const current = fs34.existsSync(envPath) ? fs34.readFileSync(envPath, "utf8").split(/\r?\n/u) : [];
   for (const [key2, value] of Object.entries(values)) {
     if (!value) continue;
     const line2 = `${key2}=${JSON.stringify(value)}`;
@@ -47495,7 +47589,7 @@ function persistEnv(values) {
     if (index >= 0) current[index] = line2;
     else current.push(line2);
   }
-  fs33.writeFileSync(envPath, `${current.filter(Boolean).join("\n")}
+  fs34.writeFileSync(envPath, `${current.filter(Boolean).join("\n")}
 `, { mode: 384 });
 }
 function question(rl, prompt) {
@@ -47648,7 +47742,7 @@ init_message_lifecycle();
 // src/runtime/storage-tunnel.ts
 init_logger();
 import net from "node:net";
-import fs34 from "node:fs";
+import fs35 from "node:fs";
 import { Client } from "ssh2";
 var tunnelReady = false;
 var tunnelStop;
@@ -47733,8 +47827,8 @@ async function startStorageTunnel(config2 = storageTunnelConfigFromEnv()) {
   if (!config2.enabled) return;
   if (!config2.host) throw new Error("OMEGA_TUNNEL_HOST is required when OMEGA_TUNNEL_ENABLED=true");
   if (!config2.hostFingerprint) throw new Error("OMEGA_TUNNEL_HOST_KEY_SHA256 is required for strict host verification");
-  if (!fs34.existsSync(config2.keyFile)) throw new Error(`SSH tunnel key is missing: ${config2.keyFile}`);
-  const privateKey = fs34.readFileSync(config2.keyFile);
+  if (!fs35.existsSync(config2.keyFile)) throw new Error(`SSH tunnel key is missing: ${config2.keyFile}`);
+  const privateKey = fs35.readFileSync(config2.keyFile);
   const client = new Client();
   const redisForwarder = createForwarder(client, config2.localRedisPort, config2.remoteRedisPort);
   const mongoForwarder = createForwarder(client, config2.localMongoPort, config2.remoteMongoPort);
@@ -47912,9 +48006,9 @@ async function bootstrap() {
   }
   const dirs = ["logs", "sessions", "uploads", "temp"];
   for (const dir of dirs) {
-    if (!fs36.existsSync(dir)) {
+    if (!fs37.existsSync(dir)) {
       try {
-        fs36.mkdirSync(dir, { recursive: true });
+        fs37.mkdirSync(dir, { recursive: true });
         healthResults.push({ component: `Dir: ${dir}`, status: "ok", message: "Created" });
       } catch (e) {
         healthResults.push({ component: `Dir: ${dir}`, status: "error", message: "Failed to create" });
@@ -48293,7 +48387,7 @@ async function restoreSessions(options = {}) {
       let pairingReference = meta.lastSeen;
       if (!pairingReference) {
         try {
-          pairingReference = fs36.statSync(sessionMetaPath(telegramId, sessionId)).mtimeMs;
+          pairingReference = fs37.statSync(sessionMetaPath(telegramId, sessionId)).mtimeMs;
         } catch {
           pairingReference = Date.now();
         }
@@ -48348,7 +48442,7 @@ async function restoreSessions(options = {}) {
         });
         registerSessionOwner(sessionId, telegramId);
         const authDir = sessionAuthDir(telegramId, sessionId);
-        if (!fs36.existsSync(path32.join(authDir, "creds.json"))) {
+        if (!fs37.existsSync(path33.join(authDir, "creds.json"))) {
           logger.warn(
             `[Boot] Auth credentials missing for ${sessionId}. Session marked FAILED; no automatic freeze or purge is performed.`
           );
