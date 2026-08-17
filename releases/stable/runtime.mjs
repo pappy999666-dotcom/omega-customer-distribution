@@ -7593,6 +7593,45 @@ var init_preview_router = __esm({
   }
 });
 
+// src/services/redis-url.ts
+function unwrap2(value) {
+  return value.trim().replace(/^["']|["']$/gu, "").trim();
+}
+function normalizeRedisUrl(value) {
+  if (!value?.trim()) return void 0;
+  const raw = value.trim();
+  const assignment = raw.match(/^(?:REDIS_URL|REDIS_CLI_URL|OMEGA_REDIS_URL)\s*=\s*(.+)$/iu);
+  const assignedValue = assignment?.[1]?.trim() ?? raw;
+  const cliUrl = assignedValue.match(/(?:^|\s)(?:-u|--url)\s+("[^"]+"|'[^']+'|\S+)/iu);
+  const candidate = unwrap2(cliUrl?.[1] ?? assignedValue);
+  if (/^redis-cli(?:\.exe)?\b/iu.test(candidate)) {
+    throw new Error('Redis command is missing its URL. Use REDIS_URL=redis://... or REDIS_CLI_URL="redis-cli -u redis://...".');
+  }
+  if (!REDIS_SCHEME.test(candidate)) {
+    throw new Error("Redis URL must start with redis:// or rediss://.");
+  }
+  try {
+    const parsed = new URL(candidate);
+    if (!parsed.hostname) throw new Error("Redis hostname is missing.");
+  } catch (error2) {
+    throw new Error(`Redis URL is invalid: ${error2 instanceof Error ? error2.message : String(error2)}`);
+  }
+  return candidate;
+}
+function configuredRedisUrl(env = process.env) {
+  return normalizeRedisUrl(env.REDIS_URL?.trim() || env.REDIS_CLI_URL?.trim() || env.OMEGA_REDIS_URL?.trim());
+}
+function redisConnectionHint() {
+  return 'Set REDIS_URL=redis://... (or REDIS_CLI_URL="redis-cli -u redis://...")';
+}
+var REDIS_SCHEME;
+var init_redis_url = __esm({
+  "src/services/redis-url.ts"() {
+    "use strict";
+    REDIS_SCHEME = /^rediss?:\/\//iu;
+  }
+});
+
 // src/services/storage/data-plane.ts
 import { Redis } from "ioredis";
 import { MongoClient } from "mongodb";
@@ -7617,11 +7656,11 @@ function redisOptions(db, keyPrefix) {
   };
 }
 function redisFromLease(lease) {
-  const url = lease.mode === "HOSTED" ? lease.redisUrl : process.env.REDIS_URL?.trim();
+  const url = lease.mode === "HOSTED" ? normalizeRedisUrl(lease.redisUrl) : configuredRedisUrl();
   const explicitHost = process.env.REDIS_HOST?.trim();
   const localMode = process.env.OMEGA_STORAGE_MODE?.trim() === "LOCAL" || process.env.OMEGA_ALLOW_LOCAL_REDIS?.trim() === "true" || process.env.OMEGA_RUNTIME_ROLE === "operator";
   if (!url && !explicitHost && !localMode) {
-    throw new Error("Redis endpoint is not configured for customer storage. Set REDIS_URL or enable OMEGA_TUNNEL_ENABLED.");
+    throw new Error(`Redis endpoint is not configured for customer storage. ${redisConnectionHint()} or enable OMEGA_TUNNEL_ENABLED.`);
   }
   const configuredDb = Number.parseInt(process.env.REDIS_DB ?? "0", 10);
   const db = Number.isSafeInteger(configuredDb) && configuredDb >= 0 && configuredDb <= 15 ? configuredDb : 0;
@@ -7692,6 +7731,7 @@ var TENANT_PATTERN, PING_TIMEOUT_MS;
 var init_data_plane = __esm({
   "src/services/storage/data-plane.ts"() {
     "use strict";
+    init_redis_url();
     TENANT_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/u;
     PING_TIMEOUT_MS = 5e3;
   }
@@ -7736,7 +7776,7 @@ function createRedis() {
     lazyConnect: false,
     retryStrategy: (times) => Math.min(times * 500, 5e3)
   };
-  const redisUrl = process.env.REDIS_URL?.trim();
+  const redisUrl = configuredRedisUrl();
   if (redisUrl) {
     return new Redis2(redisUrl, options);
   }
@@ -7755,7 +7795,7 @@ function getRedis() {
       const now3 = Date.now();
       if (now3 - lastRedisErrorAt >= 3e4) {
         lastRedisErrorAt = now3;
-        logger.error("[Redis] Connection error", { err: err.message });
+        logger.error("[Redis] Connection error", { err: err.message, hint: redisConnectionHint() });
       }
     });
     _redis.on("connect", () => {
@@ -8012,6 +8052,7 @@ var init_queue = __esm({
     "use strict";
     init_logger();
     init_data_plane();
+    init_redis_url();
     _redis = null;
     _subRedis = null;
     _mongoClient = null;
@@ -10636,8 +10677,8 @@ async function isCircuitOpen(telegramId, sessionId, domain = "default") {
   const state = await getState(k);
   if (state.state === "closed") return false;
   if (state.state === "open") {
-    const elapsed = Date.now() - (state.openedAt ?? 0);
-    if (elapsed >= RESET_MS) {
+    const elapsed2 = Date.now() - (state.openedAt ?? 0);
+    if (elapsed2 >= RESET_MS) {
       const halfOpen = { ...state, state: "half-open" };
       await saveState(k, halfOpen);
       logger.info(`[CircuitBreaker] ${k} \u2192 half-open (probe allowed)`);
@@ -16994,8 +17035,8 @@ async function mongoHealth() {
   try {
     const command = process.env.MONGOSH_BIN?.trim() || "mongosh";
     const script = "const s=db.serverStatus(); const d=db.stats(); print(JSON.stringify({ok:s.ok,version:s.version,connections:s.connections?.current,collections:d.collections}));";
-    const { stdout } = await execFileAsync2(command, ["--quiet", "--eval", script], { timeout: 4e3, maxBuffer: 128 * 1024 });
-    const line2 = stdout.trim().split("\n").filter(Boolean).at(-1) ?? "";
+    const { stdout: stdout2 } = await execFileAsync2(command, ["--quiet", "--eval", script], { timeout: 4e3, maxBuffer: 128 * 1024 });
+    const line2 = stdout2.trim().split("\n").filter(Boolean).at(-1) ?? "";
     const parsed = JSON.parse(line2);
     return {
       status: parsed.ok === 1 ? "online" : "offline",
@@ -26993,10 +27034,10 @@ var init_DownloadManager = __esm({
           cleanup: true
         });
         const result = await child;
-        const stdout = String(result.stdout ?? "");
-        const trimmed = stdout.trim();
+        const stdout2 = String(result.stdout ?? "");
+        const trimmed = stdout2.trim();
         if (trimmed.startsWith("{")) return JSON.parse(trimmed);
-        return stdout;
+        return stdout2;
       }
       // ── yt-dlp availability ──────────────────────────────────
       async ytDlpOk() {
@@ -32019,17 +32060,17 @@ var init_anti_bot = __esm({
 });
 
 // src/whatsapp/anti-system/modules/anti-media.ts
-function unwrap2(msg) {
+function unwrap3(msg) {
   const m = msg.message;
   if (!m) return null;
   return m["viewOnceMessage"]?.["message"] ?? m["viewOnceMessageV2"]?.["message"] ?? m["viewOnceMessageV2Extension"]?.["message"] ?? m["ephemeralMessage"]?.["message"] ?? m["documentWithCaptionMessage"]?.["message"] ?? m;
 }
 function messageIsImage(msg) {
-  const m = unwrap2(msg);
+  const m = unwrap3(msg);
   return Boolean(m?.["imageMessage"]);
 }
 function messageIsVideo(msg) {
-  const m = unwrap2(msg);
+  const m = unwrap3(msg);
   if (!m) return false;
   const vid = m["videoMessage"];
   if (!vid) return false;
@@ -32037,7 +32078,7 @@ function messageIsVideo(msg) {
   return mime.startsWith("video/") || mime === "";
 }
 function messageIsAudio(msg) {
-  const m = unwrap2(msg);
+  const m = unwrap3(msg);
   if (!m) return false;
   const audio = m["audioMessage"];
   if (!audio) return false;
@@ -32050,13 +32091,13 @@ var init_anti_media = __esm({
 });
 
 // src/whatsapp/anti-system/modules/anti-vn.ts
-function unwrap3(msg) {
+function unwrap4(msg) {
   const m = msg.message;
   if (!m) return null;
   return m["viewOnceMessage"]?.["message"] ?? m["viewOnceMessageV2"]?.["message"] ?? m["ephemeralMessage"]?.["message"] ?? m;
 }
 function messageIsVoiceNote(msg) {
-  const m = unwrap3(msg);
+  const m = unwrap4(msg);
   if (!m) return false;
   const audio = m["audioMessage"];
   return Boolean(audio?.["ptt"]);
@@ -32229,13 +32270,13 @@ var init_anti_group_call = __esm({
 });
 
 // src/whatsapp/anti-system/modules/anti-nsfw.ts
-function unwrap4(msg) {
+function unwrap5(msg) {
   const m = msg.message;
   if (!m) return null;
   return m["viewOnceMessage"]?.["message"] ?? m["viewOnceMessageV2"]?.["message"] ?? m["ephemeralMessage"]?.["message"] ?? m;
 }
 function isMediaMessage(msg) {
-  const m = unwrap4(msg);
+  const m = unwrap5(msg);
   return Boolean(m?.["imageMessage"] || m?.["videoMessage"]);
 }
 async function downloadMediaBuffer(msg) {
@@ -47080,8 +47121,136 @@ import fs33 from "node:fs";
 import path30 from "node:path";
 import readline from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
-var MARKER = path30.resolve(process.env.OMEGA_CUSTOMER_SETUP_MARKER?.trim() || "./.omega-customer-setup.json");
+
+// src/setup/live-console.ts
+import { stdout } from "node:process";
+var ANSI = {
+  reset: "\x1B[0m",
+  cyan: "\x1B[36m",
+  green: "\x1B[32m",
+  yellow: "\x1B[33m",
+  red: "\x1B[31m",
+  blue: "\x1B[34m",
+  dim: "\x1B[2m",
+  white: "\x1B[37m"
+};
+var FRAMES = ["\u280B", "\u2819", "\u2839", "\u2838", "\u283C", "\u2834", "\u2826", "\u2827", "\u2807", "\u280F"];
 var CUSTOMER_MODE = process.env.OMEGA_CUSTOMER_RUNTIME === "true" || process.env.OMEGA_PLATFORM === "pterodactyl";
+function colorFor(tone) {
+  if (tone === "success") return ANSI.green;
+  if (tone === "warn") return ANSI.yellow;
+  if (tone === "error") return ANSI.red;
+  return ANSI.cyan;
+}
+function clearLine() {
+  if (stdout.isTTY) stdout.write("\r\x1B[2K");
+}
+function elapsed(startedAt) {
+  const seconds = Math.max(0, Math.floor((Date.now() - startedAt) / 1e3));
+  return `${Math.floor(seconds / 60)}m ${String(seconds % 60).padStart(2, "0")}s`;
+}
+var CustomerStartupConsole = class {
+  timer;
+  startedAt = Date.now();
+  frame = 0;
+  phaseName = "STARTING";
+  phaseDetail = "preparing your customer runtime";
+  paused = false;
+  active = false;
+  lastTone = "info";
+  start() {
+    if (!CUSTOMER_MODE || this.active) return;
+    this.active = true;
+    this.paused = false;
+    this.startedAt = Date.now();
+    this.writeHeader();
+    this.render();
+    this.timer = setInterval(() => this.render(), 1200);
+    this.timer.unref?.();
+  }
+  pause() {
+    if (!this.active) return;
+    this.paused = true;
+    this.stopTicker();
+    clearLine();
+  }
+  resume() {
+    if (!this.active) return;
+    this.paused = false;
+    this.render();
+    this.timer = setInterval(() => this.render(), 1200);
+    this.timer.unref?.();
+  }
+  phase(name, detail) {
+    if (!CUSTOMER_MODE) return;
+    if (this.active && this.phaseName !== name) this.complete(this.phaseName, "moving to the next step");
+    this.phaseName = name.toUpperCase();
+    this.phaseDetail = detail;
+    this.lastTone = "info";
+    if (this.active && !this.paused) this.render();
+  }
+  success(detail) {
+    this.lastTone = "success";
+    this.phaseDetail = detail;
+    this.printStable("success");
+  }
+  warn(detail) {
+    this.lastTone = "warn";
+    this.phaseDetail = detail;
+    this.printStable("warn");
+  }
+  error(detail) {
+    this.lastTone = "error";
+    this.phaseDetail = detail;
+    this.printStable("error");
+  }
+  complete(name, detail) {
+    if (!CUSTOMER_MODE) return;
+    clearLine();
+    this.printStable("success", name.toUpperCase(), detail);
+  }
+  finish(detail) {
+    if (!CUSTOMER_MODE) return;
+    this.stopTicker();
+    clearLine();
+    this.printStable("success", "READY", detail);
+    process.stdout.write(`${ANSI.dim}\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500${ANSI.reset}
+`);
+    this.active = false;
+  }
+  writeHeader() {
+    process.stdout.write("\n");
+    process.stdout.write(`${ANSI.cyan}\u256D\u2500 OMEGA CUSTOMER DEPLOYMENT \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u256E${ANSI.reset}
+`);
+    process.stdout.write(`${ANSI.cyan}\u2502${ANSI.reset} ${ANSI.white}Live setup is running \u2014 no action is needed until prompted.${ANSI.reset} ${ANSI.cyan}\u2502${ANSI.reset}
+`);
+    process.stdout.write(`${ANSI.cyan}\u2570\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u256F${ANSI.reset}
+`);
+  }
+  render() {
+    if (!this.active || this.paused) return;
+    const frame = FRAMES[this.frame++ % FRAMES.length];
+    const dots = ".".repeat(this.frame % 4 + 1);
+    const line2 = `${colorFor(this.lastTone)}${frame}${ANSI.reset} ${ANSI.white}${this.phaseName}${ANSI.reset} ${this.phaseDetail}${ANSI.dim} ${dots} \xB7 ${elapsed(this.startedAt)}${ANSI.reset}`;
+    if (stdout.isTTY) process.stdout.write(`\r\x1B[2K${line2}`);
+    else process.stdout.write(`${line2}
+`);
+  }
+  printStable(tone, name = this.phaseName, detail = this.phaseDetail) {
+    const symbol = tone === "success" ? "\u2713" : tone === "warn" ? "!" : tone === "error" ? "\xD7" : "\u2022";
+    process.stdout.write(`${colorFor(tone)}${symbol}${ANSI.reset} ${ANSI.white}${name}${ANSI.reset} ${detail}
+`);
+  }
+  stopTicker() {
+    if (this.timer) clearInterval(this.timer);
+    this.timer = void 0;
+  }
+};
+var customerStartup = new CustomerStartupConsole();
+
+// src/setup/customer-runtime.ts
+var MARKER = path30.resolve(process.env.OMEGA_CUSTOMER_SETUP_MARKER?.trim() || "./.omega-customer-setup.json");
+var CUSTOMER_MODE2 = process.env.OMEGA_CUSTOMER_RUNTIME === "true" || process.env.OMEGA_PLATFORM === "pterodactyl";
 var BUILTIN_OWNER_ID = "8831887192";
 var RESET = "\x1B[0m";
 var CYAN = "\x1B[36m";
@@ -47100,12 +47269,17 @@ function configured(value) {
 function masked(value) {
   return value.length < 8 ? "configured" : `${value.slice(0, 4)}\u2026${value.slice(-4)}`;
 }
-function setupAlreadyCompleted() {
-  if (process.env.OMEGA_CUSTOMER_SETUP_FORCE === "true") return false;
+function setupMarker() {
   try {
-    const marker = JSON.parse(fs33.readFileSync(MARKER, "utf8"));
-    if (!marker.completedAt) return false;
-    return configured(process.env.TELEGRAM_BOT_TOKEN) || marker.telegramSkipped === true;
+    return JSON.parse(fs33.readFileSync(MARKER, "utf8"));
+  } catch {
+    return {};
+  }
+}
+async function savedWhatsAppSessionExists() {
+  try {
+    const { getAllUserIds: getAllUserIds2 } = await Promise.resolve().then(() => (init_workspace(), workspace_exports));
+    return getAllUserIds2().length > 0;
   } catch {
     return false;
   }
@@ -47135,7 +47309,7 @@ async function questionWithCountdown(rl, prompt, timeoutMs2) {
   let timedOut = false;
   const timer = setInterval(() => {
     remaining -= 1;
-    if (remaining > 0) output.write(`\r${DIM}No input? WhatsApp setup will be skipped in ${remaining}s.${RESET} `);
+    if (remaining > 0) output.write(`\r${DIM}No number received \u2014 continuing automatically in ${remaining}s.${RESET} `);
   }, 1e3);
   timer.unref?.();
   try {
@@ -47161,10 +47335,21 @@ function takeCustomerPairingPhone() {
   return phone;
 }
 async function runCustomerFirstRun() {
-  if (!CUSTOMER_MODE) return;
+  if (!CUSTOMER_MODE2) return;
   process.env.TELEGRAM_OWNER_ID = BUILTIN_OWNER_ID;
-  if (setupAlreadyCompleted()) return;
+  const marker = setupMarker();
+  const hasSavedSession = await savedWhatsAppSessionExists();
+  const telegramDone = configured(process.env.TELEGRAM_BOT_TOKEN) || marker.telegramSkipped === true;
   const configuredPhone = process.env.OMEGA_PAIRING_PHONE?.trim();
+  if (process.env.OMEGA_CUSTOMER_SETUP_FORCE !== "true" && telegramDone && hasSavedSession && !configuredPhone) {
+    customerStartup.success("saved Telegram setup and WhatsApp session found; no setup is needed");
+    return;
+  }
+  if (telegramDone) customerStartup.success("Telegram setup already saved; moving directly to WhatsApp");
+  if (hasSavedSession && !configuredPhone) {
+    customerStartup.success("saved WhatsApp session found; leaving it connected and skipping pairing");
+    return;
+  }
   if (configuredPhone && !pendingPairingPhone) {
     const { normalizePairingPhone: normalizePairingPhone2 } = await Promise.resolve().then(() => (init_socket_manager(), socket_manager_exports));
     pendingPairingPhone = normalizePairingPhone2(configuredPhone, { requireAssignedCountryCode: true });
@@ -47175,6 +47360,7 @@ async function runCustomerFirstRun() {
     return;
   }
   const rl = readline.createInterface({ input, output });
+  customerStartup.pause();
   try {
     say();
     say(`${CYAN}\u256D\u2500 OMEGA FIRST-RUN SETUP \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u256E${RESET}`);
@@ -47182,8 +47368,9 @@ async function runCustomerFirstRun() {
     say(`${CYAN}\u2570\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u256F${RESET}`);
     say();
     say(`${WHITE}STEP 1 OF 2 \xB7 TELEGRAM CONTROL${RESET}`);
-    say(`${DIM}Telegram lets you control the bot remotely. Paste the BotFather token, or type SKIP.${RESET}`);
-    if (!configured(process.env.TELEGRAM_BOT_TOKEN)) {
+    say(`${DIM}Telegram lets you control the bot remotely. To get a token: open Telegram \u2192 search @BotFather \u2192 tap Start \u2192 send /newbot \u2192 copy the token it gives you.${RESET}`);
+    say(`${DIM}Paste that token below, or type SKIP if you want WhatsApp-only mode.${RESET}`);
+    if (!telegramDone && !configured(process.env.TELEGRAM_BOT_TOKEN)) {
       const token2 = (await question(rl, "Send your Telegram bot token (or type SKIP): ")).trim();
       if (token2 && !/^skip$/iu.test(token2)) {
         process.env.TELEGRAM_BOT_TOKEN = token2;
@@ -47192,12 +47379,12 @@ async function runCustomerFirstRun() {
         delete process.env.TELEGRAM_BOT_TOKEN;
         say(`${YELLOW}\u2022 Telegram skipped. WhatsApp can still run by itself.${RESET}`);
       }
-    } else say(`${GREEN}\u2713 Telegram token already configured${RESET}`);
+    } else if (telegramDone) say(`${GREEN}\u2713 Telegram setup already saved; this step is skipped${RESET}`);
     say();
     say(`${WHITE}STEP 2 OF 2 \xB7 WHATSAPP PAIRING${RESET}`);
     say(`${DIM}Enter the WhatsApp number in international format, for example 2348012345678.${RESET}`);
     say(`${DIM}Type SKIP, or wait one minute to continue with Telegram only.${RESET}`);
-    const phoneResult = configuredPhone ? { value: configuredPhone, timedOut: false } : await questionWithCountdown(rl, "Send WhatsApp number (or type SKIP): ", 6e4);
+    const phoneResult = configuredPhone ? { value: configuredPhone, timedOut: false } : await questionWithCountdown(rl, "Send WhatsApp number with country code (or type SKIP): ", 6e4);
     if (phoneResult.value && !/^skip$/iu.test(phoneResult.value)) {
       const { normalizePairingPhone: normalizePairingPhone2 } = await Promise.resolve().then(() => (init_socket_manager(), socket_manager_exports));
       pendingPairingPhone = normalizePairingPhone2(phoneResult.value, { requireAssignedCountryCode: true });
@@ -47219,11 +47406,12 @@ async function runCustomerFirstRun() {
     else say(`${YELLOW}\u2022 Both channels were skipped. Pair WhatsApp or configure Telegram, then restart.${RESET}`);
   } finally {
     rl.close();
+    customerStartup.resume();
   }
 }
 
 // src/setup/install-matrix.ts
-var ANSI = {
+var ANSI2 = {
   reset: "\x1B[0m",
   cyan: "\x1B[36m",
   green: "\x1B[32m",
@@ -47234,7 +47422,7 @@ var ANSI = {
   white: "\x1B[37m"
 };
 function mark(ok, label) {
-  return `${ok ? ANSI.green + "\u25CF" : ANSI.yellow + "\u25CB"}${ANSI.reset} ${label}`;
+  return `${ok ? ANSI2.green + "\u25CF" : ANSI2.yellow + "\u25CB"}${ANSI2.reset} ${label}`;
 }
 function printInstallMatrix(state) {
   const role = state.runtimeRole ?? "customer";
@@ -47242,15 +47430,15 @@ function printInstallMatrix(state) {
   const title2 = operator ? "OMEGA OPERATOR" : "OMEGA CUSTOMER";
   const storageLabel = state.hostedStorageConfigured ? `${state.storageMode} \xB7 Core lease ready` : `${state.storageMode} \xB7 local/degraded`;
   const lines = [
-    `${ANSI.cyan}${title2}${ANSI.reset} ${ANSI.dim}\xB7 protected runtime${ANSI.reset}`,
+    `${ANSI2.cyan}${title2}${ANSI2.reset} ${ANSI2.dim}\xB7 protected runtime${ANSI2.reset}`,
     `${mark(true, "Runtime ready")}  ${mark(true, operator ? "Operator mode" : "Customer mode")}`,
     `${mark(state.telegramConfigured, state.telegramConfigured ? "Telegram ready" : "Telegram optional")}`,
     `${mark(state.whatsappConfigured, state.whatsappConfigured ? "WhatsApp ready" : "WhatsApp pairing pending")}`,
     `${mark(state.coreConfigured, state.coreConfigured ? "Release sync ready" : "Local mode")}`,
     `${mark(Boolean(state.adminSurfaceEnabled ?? operator), operator ? "Admin surface enabled" : "Admin surface protected")}`,
-    `${ANSI.dim}Storage: ${storageLabel}${ANSI.reset}`,
+    `${ANSI2.dim}Storage: ${storageLabel}${ANSI2.reset}`,
     ...state.tunnelEnabled !== void 0 ? [`${mark(Boolean(state.tunnelReady), state.tunnelReady ? "Secure tunnel ready" : "Tunnel unavailable \xB7 bot continues")}`] : [],
-    `${ANSI.dim}Upload \u2192 extract \u2192 start \xB7 routine logs stay on disk${ANSI.reset}`
+    `${ANSI2.dim}Upload \u2192 extract \u2192 start \xB7 routine logs stay on disk${ANSI2.reset}`
   ];
   console.log(lines.join("\n"));
 }
@@ -47415,6 +47603,7 @@ process.once("SIGINT", stopStorageTunnel);
 process.once("SIGTERM", stopStorageTunnel);
 
 // src/index.ts
+init_redis_url();
 if (process.env.OMEGA_RUNTIME_ROLE === "customer") {
   process.env.OMEGA_CUSTOMER_RUNTIME = "true";
 }
@@ -47474,18 +47663,25 @@ function printBanner() {
   console.log("OMEGA // OPERATOR NODE \u2014 starting");
 }
 async function bootstrap() {
+  customerStartup.start();
+  customerStartup.phase("PREPARING", "checking your panel environment and saved setup");
   printBanner();
   if (/^(1|true|yes|on)$/i.test(process.env.OMEGA_TUNNEL_ENABLED ?? "")) {
+    customerStartup.phase("SECURE STORAGE", "connecting the optional private storage tunnel");
     try {
       await startStorageTunnel();
+      customerStartup.success("secure storage tunnel connected");
     } catch (error2) {
       const detail = error2 instanceof Error ? error2.message : String(error2);
       logger.error("[Tunnel] Storage tunnel unavailable; continuing without hosted workers", { error: detail });
+      customerStartup.warn("storage tunnel unavailable; the bot will continue in local mode");
       setSubsystemHealth("Storage", "DEGRADED");
       if (/^(1|true|yes|on)$/i.test(process.env.OMEGA_TUNNEL_STRICT ?? "")) return;
     }
   }
+  customerStartup.phase("SETUP", "checking Telegram and WhatsApp configuration");
   await runCustomerFirstRun();
+  customerStartup.success("saved setup checked; continuing with selected channels");
   if (process.env.OMEGA_CUSTOMER_RUNTIME === "true" || process.env.OMEGA_PLATFORM === "pterodactyl") {
     const runtimeRole = process.env.OMEGA_RUNTIME_ROLE === "operator" ? "operator" : "customer";
     const hosted = process.env.OMEGA_STORAGE_MODE?.trim() === "HOSTED";
@@ -47507,6 +47703,7 @@ async function bootstrap() {
   }
   logger.info("[Boot] Starting WA-Bridge...");
   acquireRuntimeLease();
+  customerStartup.phase("LOCAL RUNTIME", "preparing folders, health checks, and the local command engine");
   const healthResults = [];
   const requiredEnv = process.env.OMEGA_CUSTOMER_RUNTIME === "true" ? [] : ["TELEGRAM_BOT_TOKEN", "TELEGRAM_OWNER_ID"];
   for (const key2 of requiredEnv) {
@@ -47531,19 +47728,29 @@ async function bootstrap() {
   }
   const { HealthReporter: HealthReporter2 } = await Promise.resolve().then(() => (init_HealthReporter(), HealthReporter_exports));
   try {
+    customerStartup.phase("WEB CONSOLE", "opening the private health monitor");
     await startWebServer();
+    customerStartup.success(`health monitor ready on port ${process.env.WEB_PORT || 3e3}`);
     healthResults.push({ component: "Web Server", status: "ok", message: `Port ${process.env.WEB_PORT || 3e3}` });
   } catch (e) {
     setSubsystemHealth("Web", "FAILED");
     healthResults.push({ component: "Web Server", status: "error", message: String(e) });
   }
+  customerStartup.phase("REDIS DATA LANE", "checking optional queue storage without blocking ordinary commands");
   logger.info("[Boot] Connecting to Redis...");
-  const redisConfigured = Boolean(
-    process.env.REDIS_URL?.trim() || process.env.REDIS_HOST?.trim() || process.env.OMEGA_TUNNEL_ENABLED?.match(/^(1|true|yes|on)$/i) || process.env.OMEGA_STORAGE_MODE?.trim() === "LOCAL" || process.env.OMEGA_ALLOW_LOCAL_REDIS?.trim() === "true"
-  );
+  let redisConfigured = false;
+  try {
+    redisConfigured = Boolean(
+      configuredRedisUrl() || process.env.REDIS_HOST?.trim() || process.env.OMEGA_TUNNEL_ENABLED?.match(/^(1|true|yes|on)$/i) || process.env.OMEGA_STORAGE_MODE?.trim() === "LOCAL" || process.env.OMEGA_ALLOW_LOCAL_REDIS?.trim() === "true"
+    );
+  } catch (error2) {
+    customerStartup.error(error2 instanceof Error ? error2.message : String(error2));
+    logger.warn("[Boot] Redis configuration is invalid; starting without queue workers", { hint: redisConnectionHint() });
+  }
   let redisAvailable = false;
   if (!redisConfigured) {
-    logger.warn("[Boot] Redis endpoint is not configured; queue workers remain disabled. Set REDIS_URL or enable the storage tunnel/local mode.");
+    logger.warn(`[Boot] Redis endpoint is not configured; queue workers remain disabled. ${redisConnectionHint()} or enable the storage tunnel/local mode.`);
+    customerStartup.warn("Redis is optional; add REDIS_URL or use local/tunnel mode for bulk workers");
   } else try {
     const redis = getRedis();
     await Promise.race([
@@ -47554,12 +47761,15 @@ async function bootstrap() {
       })
     ]);
     redisAvailable = true;
+    customerStartup.success("Redis connected; queue workers can start");
     logger.info("[Boot] Redis connected \u2713");
   } catch (err) {
+    customerStartup.warn("Redis is unavailable; ordinary bot commands continue while bulk workers stay paused");
     logger.warn("[Boot] Redis unavailable; starting in degraded mode without BullMQ workers", {
       err: err instanceof Error ? err.message : String(err)
     });
   }
+  customerStartup.phase("TELEGRAM", process.env.TELEGRAM_BOT_TOKEN ? "starting your remote control channel" : "Telegram skipped; WhatsApp-only mode is allowed");
   const bot = process.env.TELEGRAM_BOT_TOKEN ? createBot() : void 0;
   if (bot) {
     logger.info("[Boot] Initializing Telegram bot...");
@@ -47680,6 +47890,7 @@ async function bootstrap() {
       logger.error("[EventHandler] background dispatch failed", { sessionId, event, err: String(err) });
     });
   });
+  customerStartup.phase("BACKGROUND WORKERS", redisAvailable ? "starting bounded background workers" : "keeping queue workers paused until Redis is available");
   logger.info("[Boot] Starting BullMQ workers...");
   const botRef2 = bot ? {
     telegram: {
@@ -47746,6 +47957,7 @@ async function bootstrap() {
       logger.warn("[Boot] Telegram bot launch is still pending after 15 seconds; session restoration continues");
     }
   }, 15e3).unref();
+  customerStartup.phase("WHATSAPP", "checking for a new pairing request or saved sessions");
   const pendingPairingPhone2 = takeCustomerPairingPhone();
   if (pendingPairingPhone2) {
     const { saveSessionMeta: saveSessionMeta3 } = await Promise.resolve().then(() => (init_workspace(), workspace_exports));
@@ -47770,9 +47982,12 @@ async function bootstrap() {
       onConnected: async () => console.log("[PAIRING] successful; restart the bot to pair a new number")
     }).catch((error2) => console.error(`[PAIRING] failed: ${String(error2)}`));
   }
+  customerStartup.phase("PARENT SYNC", process.env.OMEGA_API_URL || process.env.OMEGA_CORE_URL ? "enrolling this deployment with the parent Core" : "Core URL not configured; local mode remains available");
   await startPterodactylClientBridge();
+  if (process.env.OMEGA_API_URL || process.env.OMEGA_CORE_URL) customerStartup.success("parent sync started; local bot remains authoritative");
   const restoreMode = process.env.WA_RESTORE_SESSIONS ?? "true";
   if (restoreMode !== "false") {
+    customerStartup.phase("WHATSAPP SESSIONS", "restoring saved sessions carefully so the panel stays responsive");
     const staged = restoreMode === "staged";
     logger.info("[Boot] Restoring sessions from disk...", {
       mode: staged ? "staged" : "full",
@@ -47790,6 +48005,7 @@ async function bootstrap() {
       setSubsystemHealth("WhatsApp", "HEALTHY");
       setSubsystemHealth("Validator", "HEALTHY");
       setSubsystemHealth("Join Manager", "HEALTHY");
+      customerStartup.success("saved WhatsApp sessions restored or queued for recovery");
       healthResults.push({ component: "Sessions", status: "ok" });
     } catch (e) {
       setSubsystemHealth("Sessions", "FAILED");
@@ -47804,6 +48020,7 @@ async function bootstrap() {
     setSubsystemHealth("WhatsApp", "DEGRADED");
     setSubsystemHealth("Validator", "DEGRADED");
     setSubsystemHealth("Join Manager", "DEGRADED");
+    customerStartup.warn("WhatsApp restore is paused; Telegram control remains available");
     healthResults.push({ component: "Sessions", status: "warn", message: "Restore paused for control-plane recovery" });
   }
   startAutoPromoteScheduler();
@@ -47814,6 +48031,7 @@ async function bootstrap() {
   startSessionCleaner();
   setSubsystemHealth("Schedulers", "HEALTHY");
   healthResults.push({ component: "Schedulers", status: "ok" });
+  customerStartup.finish("startup checks complete; selected services are now running");
   const isHealthy = HealthReporter2.display(healthResults);
   if (!isHealthy) {
     console.log("\x1B[31mCritical startup failures detected. Check logs for details.\x1B[0m");

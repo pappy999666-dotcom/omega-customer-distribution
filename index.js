@@ -4,6 +4,8 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { spawn } from 'node:child_process';
 
+process.env.NODE_NO_WARNINGS ??= '1';
+process.noDeprecation = true;
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const STATE_DIR = path.join(ROOT, '.omega-runtime');
 const CURRENT_DIR = path.join(STATE_DIR, 'current');
@@ -16,8 +18,28 @@ const MANIFEST_URL = process.env.OMEGA_UPDATE_MANIFEST_URL?.trim()
 const AUTO_UPDATE = !/^(0|false|no|off)$/iu.test(process.env.OMEGA_AUTO_UPDATE ?? 'true');
 const FETCH_TIMEOUT_MS = 45_000;
 
-function status(message) { process.stdout.write(`[OMEGA] ${message}\n`); }
-function warn(message) { process.stderr.write(`[OMEGA] warning: ${message}\n`); }
+const ANSI = { reset: '\x1b[0m', cyan: '\x1b[36m', green: '\x1b[32m', yellow: '\x1b[33m', red: '\x1b[31m', dim: '\x1b[2m' };
+const SPINNER = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+let spinnerTimer;
+let spinnerFrame = 0;
+function clearLiveLine() { if (process.stdout.isTTY) process.stdout.write('\r\x1b[2K'); }
+function status(message) { clearLiveLine(); process.stdout.write(`${ANSI.green}✓${ANSI.reset} ${message}\n`); }
+function warn(message) { clearLiveLine(); process.stdout.write(`${ANSI.yellow}!${ANSI.reset} ${message}\n`); }
+function startLive(message) {
+  let elapsed = 0;
+  const draw = () => {
+    const frame = SPINNER[spinnerFrame++ % SPINNER.length];
+    const dots = '.'.repeat((spinnerFrame % 4) + 1);
+    const line = `${ANSI.cyan}${frame}${ANSI.reset} ${message}${dots}${ANSI.dim} ${elapsed}s${ANSI.reset}`;
+    if (process.stdout.isTTY) process.stdout.write(`\r\x1b[2K${line}`);
+    else process.stdout.write(`${line}\n`);
+    elapsed += 1;
+  };
+  draw();
+  spinnerTimer = setInterval(draw, 1_200);
+  spinnerTimer.unref?.();
+  return () => { if (spinnerTimer) clearInterval(spinnerTimer); spinnerTimer = undefined; clearLiveLine(); status(message + ' complete'); };
+}
 function critical(message, error) {
   process.stderr.write(`[OMEGA] CRITICAL: ${message}${error ? ` — ${error.message || error}` : ''}\n`);
 }
@@ -56,16 +78,20 @@ async function stageRelease(manifest) {
   if (!manifest || typeof manifest.version !== 'string' || !Array.isArray(manifest.files)) throw new Error('Invalid update manifest');
   fs.rmSync(STAGE_DIR, { recursive: true, force: true });
   ensureDir(STAGE_DIR);
-  for (const entry of manifest.files) {
+  const stopDownload = startLive(`downloading and verifying release ${manifest.version}`);
+  try {
+    for (const entry of manifest.files) {
     const relative = safeRelative(entry.path);
     const data = await fetchBytes(`https://raw.githubusercontent.com/${REPO}/main/releases/${CHANNEL}/${relative}?omega=${encodeURIComponent(manifest.version)}`);
     if (sha256(data) !== entry.sha256) throw new Error(`Hash mismatch for ${relative}`);
     const destination = path.join(STAGE_DIR, relative);
     ensureDir(path.dirname(destination));
-    fs.writeFileSync(destination, data, { mode: relative.endsWith('.json') || relative.endsWith('.js') || relative.endsWith('.mjs') ? 0o600 : 0o640 });
-  }
+      fs.writeFileSync(destination, data, { mode: relative.endsWith('.json') || relative.endsWith('.js') || relative.endsWith('.mjs') ? 0o600 : 0o640 });
+    }
+  } finally { stopDownload(); }
   if (!fs.existsSync(path.join(STAGE_DIR, 'package.json')) || !fs.existsSync(path.join(STAGE_DIR, 'runtime.mjs'))) throw new Error('Release is missing required runtime files');
-  await runNpmInstall(STAGE_DIR);
+  const stopInstall = startLive('installing required runtime packages safely');
+  try { await runNpmInstall(STAGE_DIR); } finally { stopInstall(); }
   return manifest.version;
 }
 function promote(version) {
@@ -78,15 +104,18 @@ function promote(version) {
 async function ensureCurrent() {
   ensureDir(STATE_DIR);
   let manifest;
+  const stopCheck = startLive(AUTO_UPDATE ? 'checking for a verified Omega update' : 'checking the installed Omega runtime');
   try { manifest = AUTO_UPDATE ? await fetchJson(MANIFEST_URL) : null; }
   catch (error) {
-    if (fs.existsSync(path.join(CURRENT_DIR, 'runtime.mjs'))) { warn(`update check unavailable; using installed release (${error.message})`); return; }
+    stopCheck();
+    if (fs.existsSync(path.join(CURRENT_DIR, 'runtime.mjs'))) { warn(`update check unavailable; using installed release`); return; }
     throw error;
   }
+  stopCheck();
   const statePath = path.join(STATE_DIR, 'state.json');
   const state = fs.existsSync(statePath) ? JSON.parse(fs.readFileSync(statePath, 'utf8')) : {};
   const needsUpdate = Boolean(manifest && (state.version !== manifest.version || !fs.existsSync(path.join(CURRENT_DIR, 'node_modules'))));
-  if (!needsUpdate) return;
+  if (!needsUpdate) { status('installed customer runtime is already current'); return; }
   status(`updating customer runtime to ${manifest.version}`);
   try {
     await stageRelease(manifest);
@@ -104,6 +133,7 @@ async function main() {
   process.env.OMEGA_PLATFORM ??= 'pterodactyl';
   process.env.OMEGA_RUNTIME_ROLE ??= 'customer';
   await ensureCurrent();
+  status('customer runtime verified; handing over to live setup');
   const runtime = pathToFileURL(path.join(CURRENT_DIR, 'runtime.mjs')).href;
   await import(`${runtime}?boot=${Date.now()}`);
 }
