@@ -1806,7 +1806,7 @@ var init_UrlDetector = __esm({
   "src/preview-engine/UrlDetector.ts"() {
     "use strict";
     init_PreviewLogger();
-    URL_RE = /(https?:\/\/(?:www\.)?[-a-zA-Z0-9@:%._+~#=]{1,256}\.[a-zA-Z0-9()]{1,6}\b[-a-zA-Z0-9()@:%_+.~#?&/=]*)/gi;
+    URL_RE = /(https?:\/\/(?:www\.)?[-a-zA-Z0-9@:%._+~#=]{1,256}\.[a-zA-Z0-9()\-]{2,63}\b[-a-zA-Z0-9()@:%_+.~#?&/=]*)/gi;
     UrlDetector = class _UrlDetector {
       /**
        * Extract all unique URLs from a string.
@@ -2425,8 +2425,10 @@ var init_ThumbnailResolver = __esm({
        */
       static async resolveGroupThumbnail(socket, groupJid, preferredUrls = []) {
         const candidates = [...new Set(preferredUrls.filter((value) => /^https?:\/\//i.test(value)))];
-        const profileUrl = await socket.profilePictureUrl(groupJid, "image").catch(() => null);
-        if (profileUrl && !candidates.includes(profileUrl)) candidates.push(profileUrl);
+        for (const mode of ["image", "preview"]) {
+          const profileUrl = await socket.profilePictureUrl(groupJid, mode).catch(() => null);
+          if (profileUrl && !candidates.includes(profileUrl)) candidates.push(profileUrl);
+        }
         for (const sourceUrl of candidates) {
           const buffer = await _ThumbnailResolver.download(sourceUrl).catch(() => void 0);
           if (buffer?.length) return { buffer, sourceUrl };
@@ -9570,7 +9572,14 @@ async function prepareStatusPreview(url, sock, existingPreview) {
       hq: existingPreview.hqThumbnail ? existingPreview.hqThumbnail : null
     };
   } else {
-    preview = await buildStatusPreview(url, sock);
+    const socketMeta = PreviewValidator.isGroupInviteLink(url) && sock.groupGetInviteInfo && sock.profilePictureUrl ? await PreviewResolver.resolveGroup(url, sock, existingPreview).catch(() => void 0) : PreviewValidator.isWhatsAppChannelLink(url) && sock.newsletterMetadata ? await PreviewResolver.resolveChannel(url, sock, existingPreview).catch(() => void 0) : void 0;
+    preview = socketMeta ? {
+      url: socketMeta.url ?? url,
+      title: socketMeta.title ?? "",
+      description: socketMeta.description ?? "",
+      smallThumb: socketMeta.thumbnail ? Buffer.from(socketMeta.thumbnail) : null,
+      hq: null
+    } : await buildStatusPreview(url, sock);
     if (!preview) {
       try {
         const meta = await MetadataResolver.resolve(url);
@@ -9670,7 +9679,14 @@ async function sendGroupStatus(socket, sessionId, groupJid, text2, options = {})
         preview = { url, title: options.existingPreview.title || "", description: options.existingPreview.description || "", smallThumb: buf, hq: null };
       }
     } else {
-      preview = await buildStatusPreview(url, sock);
+      const socketMeta = PreviewValidator.isGroupInviteLink(url) && sock.groupGetInviteInfo && sock.profilePictureUrl ? await PreviewResolver.resolveGroup(url, sock, options.existingPreview).catch(() => void 0) : PreviewValidator.isWhatsAppChannelLink(url) && sock.newsletterMetadata ? await PreviewResolver.resolveChannel(url, sock, options.existingPreview).catch(() => void 0) : void 0;
+      preview = socketMeta ? {
+        url: socketMeta.url ?? url,
+        title: socketMeta.title ?? "",
+        description: socketMeta.description ?? "",
+        smallThumb: socketMeta.thumbnail ? Buffer.from(socketMeta.thumbnail) : null,
+        hq: null
+      } : await buildStatusPreview(url, sock);
       if (!preview) {
         try {
           const meta = await MetadataResolver.resolve(url);
@@ -32754,7 +32770,7 @@ var require_package = __commonJS({
   "package.json"(exports, module) {
     module.exports = {
       name: "@workspace/wa-bridge",
-      version: "1.2.28",
+      version: "1.2.29",
       description: "Telegram \u2194 WhatsApp Automation Bridge \u2014 Production-Grade Multi-Device Control Center",
       type: "module",
       main: "dist/index.js",
