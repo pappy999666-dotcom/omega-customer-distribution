@@ -36,7 +36,7 @@ async function fetchBytes(url) {
     return Buffer.from(await response.arrayBuffer());
   } finally { clearTimeout(timer); }
 }
-async function fetchJson(url) { return JSON.parse((await fetchBytes(url)).toString('utf8')); }
+async function fetchJson(url) { return JSON.parse((await fetchBytes(`${url}${url.includes('?') ? '&' : '?'}omega=${Date.now()}`)).toString('utf8')); }
 function sha256(data) { return crypto.createHash('sha256').update(data).digest('hex'); }
 function hashFile(file) { return sha256(fs.readFileSync(file)); }
 function runNpmInstall(cwd) {
@@ -54,7 +54,7 @@ async function stageRelease(manifest) {
   ensureDir(STAGE_DIR);
   for (const entry of manifest.files) {
     const relative = safeRelative(entry.path);
-    const data = await fetchBytes(`https://raw.githubusercontent.com/${REPO}/main/releases/${CHANNEL}/${relative}`);
+    const data = await fetchBytes(`https://raw.githubusercontent.com/${REPO}/main/releases/${CHANNEL}/${relative}?omega=${encodeURIComponent(manifest.version)}`);
     if (sha256(data) !== entry.sha256) throw new Error(`Hash mismatch for ${relative}`);
     const destination = path.join(STAGE_DIR, relative);
     ensureDir(path.dirname(destination));
