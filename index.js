@@ -41,7 +41,11 @@ function sha256(data) { return crypto.createHash('sha256').update(data).digest('
 function hashFile(file) { return sha256(fs.readFileSync(file)); }
 function runNpmInstall(cwd) {
   return new Promise((resolve, reject) => {
-    const child = spawn(process.platform === 'win32' ? 'npm.cmd' : 'npm', ['install', '--ignore-scripts', '--omit=dev', '--no-audit', '--no-fund'], { cwd, stdio: ['ignore', 'ignore', 'pipe'] });
+    const child = spawn(process.platform === 'win32' ? 'npm.cmd' : 'npm', ['install', '--ignore-scripts', '--omit=dev', '--no-audit', '--no-fund', '--loglevel=error'], {
+      cwd,
+      env: { ...process.env, npm_config_audit: 'false', npm_config_fund: 'false', npm_config_update_notifier: 'false', npm_config_loglevel: 'error' },
+      stdio: ['ignore', 'ignore', 'pipe'],
+    });
     let stderr = '';
     child.stderr.on('data', (chunk) => { stderr += String(chunk); });
     child.once('error', reject);
@@ -95,6 +99,7 @@ async function ensureCurrent() {
   }
 }
 async function main() {
+  process.env.NODE_NO_WARNINGS ??= '1';
   process.env.OMEGA_CUSTOMER_RUNTIME ??= 'true';
   process.env.OMEGA_PLATFORM ??= 'pterodactyl';
   process.env.OMEGA_RUNTIME_ROLE ??= 'customer';

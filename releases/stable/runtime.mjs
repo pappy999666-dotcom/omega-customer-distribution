@@ -4246,7 +4246,7 @@ function unwrapMessage(raw) {
   let viewOnce = false;
   let ephemeral = false;
   let forwarded = false;
-  const path32 = [];
+  const path33 = [];
   const seen2 = /* @__PURE__ */ new Set();
   const MAX_DEPTH = 16;
   for (let i = 0; i < MAX_DEPTH; i++) {
@@ -4258,13 +4258,13 @@ function unwrapMessage(raw) {
     if (VIEW_ONCE_KEYS.includes(key2)) viewOnce = true;
     if (EPHEMERAL_KEYS.includes(key2)) ephemeral = true;
     if (FORWARD_KEYS.includes(key2)) forwarded = true;
-    path32.push(key2);
+    path33.push(key2);
     const node = current[key2];
     current = node?.message ?? node;
   }
   const mediaNode = current?.imageMessage ?? current?.videoMessage ?? current?.audioMessage ?? current?.stickerMessage ?? current?.documentMessage;
   if (mediaNode?.viewOnce === true || current?.viewOnce === true) viewOnce = true;
-  return { inner: current, viewOnce, ephemeral, forwarded, path: path32 };
+  return { inner: current, viewOnce, ephemeral, forwarded, path: path33 };
 }
 var WRAPPER_KEYS, VIEW_ONCE_KEYS, EPHEMERAL_KEYS, FORWARD_KEYS;
 var init_MessageUnwrapper = __esm({
@@ -17012,11 +17012,11 @@ async function mongoHealth() {
 }
 function diskHealth() {
   try {
-    const path32 = process.env.OMEGA_DISK_PATH?.trim() || "/";
-    const stat = fs11.statfsSync(path32);
+    const path33 = process.env.OMEGA_DISK_PATH?.trim() || "/";
+    const stat = fs11.statfsSync(path33);
     const totalBytes = Number(stat.blocks) * Number(stat.bsize);
     const freeBytes = Number(stat.bavail) * Number(stat.bsize);
-    return { path: path32, totalBytes, freeBytes, usedBytes: Math.max(0, totalBytes - freeBytes) };
+    return { path: path33, totalBytes, freeBytes, usedBytes: Math.max(0, totalBytes - freeBytes) };
   } catch {
     return { path: "/", totalBytes: 0, freeBytes: 0, usedBytes: 0 };
   }
@@ -20486,12 +20486,12 @@ Separate question and options with |`);
     return warningCard("Poll", `Provide at least a question and 2 options.
 ${italic(`Example: ${prefix}poll Best color? | Red | Blue | Green`)}`);
   }
-  const question = parts[0];
+  const question2 = parts[0];
   const options = parts.slice(1);
   try {
     await PreviewManager.send(socket, groupJid, "", {
       poll: {
-        name: question,
+        name: question2,
         values: options,
         selectableCount: 1
       },
@@ -20499,7 +20499,7 @@ ${italic(`Example: ${prefix}poll Best color? | Red | Blue | Green`)}`);
       sessionId,
       telegramId
     });
-    return successCard("Poll Created", bold(question), options.map((o, i) => [`Option ${i + 1}`, o]));
+    return successCard("Poll Created", bold(question2), options.map((o, i) => [`Option ${i + 1}`, o]));
   } catch (err) {
     return errorCard("Poll Failed", "WhatsApp rejected the poll.", String(err));
   }
@@ -28578,8 +28578,8 @@ async function decryptVoteToOption(input2, options) {
   if (!vote?.encPayload || !vote?.encIv) {
     return { optionIndex: -1, selectedHex: [] };
   }
-  const crypto16 = await getPollCrypto();
-  if (!crypto16) {
+  const crypto17 = await getPollCrypto();
+  if (!crypto17) {
     return { optionIndex: -1, selectedHex: [] };
   }
   const pollEncKey = pollSecretForKey(input2.pollMsgId, input2.scope);
@@ -28592,7 +28592,7 @@ async function decryptVoteToOption(input2, options) {
     for (const pollCreatorJid of creators) {
       for (const voterJid of voters) {
         try {
-          const attempt = crypto16.decrypt(
+          const attempt = crypto17.decrypt(
             { encPayload: vote.encPayload, encIv: vote.encIv },
             { pollCreatorJid, pollMsgId: input2.pollMsgId, pollEncKey, voterJid }
           );
@@ -29037,7 +29037,7 @@ var init_SelectionProvider = __esm({
         const prefix = input2.prefix ?? ".";
         const heading = input2.command === "song" ? "SONG SEARCH" : "VIDEO SEARCH";
         const recovery = input2.command === "song" ? `If voting fails, reply with ${prefix}songrp <number>.` : `If the poll does not work, reply with ${prefix}${input2.command} <number>.`;
-        const question = [
+        const question2 = [
           `${emoji} ${heading}`,
           input2.query ? `Search: ${input2.query.slice(0, 80)}` : "",
           "",
@@ -29049,7 +29049,7 @@ var init_SelectionProvider = __esm({
           chatJid: input2.chatJid,
           requesterJid: input2.userJid,
           command: input2.command,
-          question,
+          question: question2,
           options: input2.results.map((r) => r.title.slice(0, 100)),
           durationMs: 6e4,
           payload,
@@ -34018,9 +34018,9 @@ function defaultDictionary() {
     const wordListModule = require3("word-list");
     const file = typeof wordListModule === "string" ? wordListModule : wordListModule.default;
     if (!file) return /* @__PURE__ */ new Set();
-    const fs36 = require3("node:fs");
+    const fs37 = require3("node:fs");
     return new Set(
-      fs36.readFileSync(file, "utf8").split(/\r?\n/u).map((word) => word.trim().toLowerCase()).filter((word) => /^[a-z]+$/u.test(word) && word.length > 1)
+      fs37.readFileSync(file, "utf8").split(/\r?\n/u).map((word) => word.trim().toLowerCase()).filter((word) => /^[a-z]+$/u.test(word) && word.length > 1)
     );
   } catch {
     return /* @__PURE__ */ new Set();
@@ -34580,19 +34580,19 @@ function gameKey(scope, type) {
 function normalizeJid3(jid) {
   return jid.trim().toLowerCase().replace(/:\d+(?=@)/, "");
 }
-function pollEventFor(game, question, headerText) {
+function pollEventFor(game, question2, headerText) {
   return {
     scope: game.scope,
     gameType: game.type,
     gameId: game.id,
-    questionId: question.id,
+    questionId: question2.id,
     text: headerText,
     poll: {
-      name: question.prompt,
-      values: question.options,
+      name: question2.prompt,
+      values: question2.options,
       selectableCount: 1,
-      endDate: new Date(question.expiresAt),
-      messageSecret: Buffer.from(question.messageSecret ?? "", "base64")
+      endDate: new Date(question2.expiresAt),
+      messageSecret: Buffer.from(question2.messageSecret ?? "", "base64")
     }
   };
 }
@@ -34729,14 +34729,14 @@ ${message.slice(0, 300)}`
         for (const game2 of this.games.values()) {
           if (game2.scope.sessionId !== scope.sessionId || game2.scope.chatJid !== scope.chatJid) continue;
           if (game2.status !== "active") continue;
-          const question2 = game2.questions.find((q) => {
+          const question3 = game2.questions.find((q) => {
             const binding = q.pollBinding;
             if (binding && (binding.sessionId !== scope.sessionId || binding.chatJid !== scope.chatJid || binding.gameId !== game2.id || binding.questionId !== q.id)) return false;
             const boundId = binding?.pollMessageKey?.id ?? q.pollMsgId;
             return boundId === pollMsgId;
           });
-          if (question2) {
-            owner = { game: game2, question: question2 };
+          if (question3) {
+            owner = { game: game2, question: question3 };
             break;
           }
         }
@@ -34744,22 +34744,22 @@ ${message.slice(0, 300)}`
           logger.debug("[PollGame] vote for unknown poll ignored", { pollMsgId, scope });
           return;
         }
-        const { game, question } = owner;
-        if (question.status !== "open" || this.now() > question.expiresAt) {
+        const { game, question: question2 } = owner;
+        if (question2.status !== "open" || this.now() > question2.expiresAt) {
           logger.debug("[PollGame] late vote ignored", { pollMsgId });
           return;
         }
         const voter = normalizeJid3(input2.voterJid);
         if (!voter || !voter.includes("@")) return;
-        const decrypted = input2.decrypted ?? await decryptVoteToOption({ ...input2, voterJid: input2.voterJid }, question.options);
+        const decrypted = input2.decrypted ?? await decryptVoteToOption({ ...input2, voterJid: input2.voterJid }, question2.options);
         if (decrypted.removed) {
-          delete question.votes[voter];
+          delete question2.votes[voter];
           this.recomputePlayers(game);
           logger.info("[PollGame] vote removed", {
             sessionId: scope.sessionId,
             chatJid: scope.chatJid,
             gameId: game.id,
-            questionId: question.id,
+            questionId: question2.id,
             pollMsgId,
             participant: voter
           });
@@ -34770,14 +34770,14 @@ ${message.slice(0, 300)}`
           logger.warn("[PollGame] ambiguous vote ignored", { pollMsgId, voter });
           return;
         }
-        const previous = question.votes[voter];
-        question.votes[voter] = decrypted.optionIndex;
+        const previous = question2.votes[voter];
+        question2.votes[voter] = decrypted.optionIndex;
         this.recomputePlayers(game);
         logger.info("[PollGame] vote confirmed", {
           sessionId: scope.sessionId,
           chatJid: scope.chatJid,
           gameId: game.id,
-          questionId: question.id,
+          questionId: question2.id,
           pollMsgId,
           participant: voter,
           selectedOption: decrypted.optionIndex,
@@ -34796,11 +34796,11 @@ ${message.slice(0, 300)}`
         if (!rawId) return;
         for (const game of this.games.values()) {
           if (game.id !== gameId || game.scope.sessionId !== scope.sessionId || game.scope.chatJid !== scope.chatJid) continue;
-          const question = game.questions.find((q) => q.id === questionId);
-          if (!question) return;
-          question.pollMsgId = rawId;
+          const question2 = game.questions.find((q) => q.id === questionId);
+          if (!question2) return;
+          question2.pollMsgId = rawId;
           const keyRecord = key2 && typeof key2 === "object" ? key2 : {};
-          question.pollMessageKey = {
+          question2.pollMessageKey = {
             id: rawId,
             ...typeof keyRecord.remoteJid === "string" ? { remoteJid: keyRecord.remoteJid } : {},
             ...typeof keyRecord.fromMe === "boolean" ? { fromMe: keyRecord.fromMe } : {},
@@ -34808,28 +34808,28 @@ ${message.slice(0, 300)}`
             ...typeof keyRecord.participantAlt === "string" ? { participantAlt: keyRecord.participantAlt } : {},
             ...typeof keyRecord.remoteJidAlt === "string" ? { remoteJidAlt: keyRecord.remoteJidAlt } : {}
           };
-          question.pollBinding = {
+          question2.pollBinding = {
             sessionId: game.scope.sessionId,
             chatJid: game.scope.chatJid,
             gameId: game.id,
-            questionId: question.id,
-            pollMessageKey: question.pollMessageKey,
-            pollCreationTimestamp: question.pollCreationTimestamp,
-            options: [...question.options],
-            ...question.correctIndex !== void 0 ? { correctOption: question.correctIndex } : {},
-            expiresAt: question.expiresAt
+            questionId: question2.id,
+            pollMessageKey: question2.pollMessageKey,
+            pollCreationTimestamp: question2.pollCreationTimestamp,
+            options: [...question2.options],
+            ...question2.correctIndex !== void 0 ? { correctOption: question2.correctIndex } : {},
+            expiresAt: question2.expiresAt
           };
-          if (question.messageSecret) {
-            registerPollSecret(rawId, Buffer.from(question.messageSecret, "base64"), game.scope);
+          if (question2.messageSecret) {
+            registerPollSecret(rawId, Buffer.from(question2.messageSecret, "base64"), game.scope);
           }
           logger.info("[PollGame] poll created", {
             sessionId: game.scope.sessionId,
             chatJid: game.scope.chatJid,
             gameId: game.id,
-            questionId: question.id,
+            questionId: question2.id,
             pollMsgId: rawId,
-            pollCreationTimestamp: question.pollCreationTimestamp,
-            expiresAt: question.expiresAt
+            pollCreationTimestamp: question2.pollCreationTimestamp,
+            expiresAt: question2.expiresAt
           });
           this.persistSnapshot(game);
           return;
@@ -34880,19 +34880,19 @@ ${message.slice(0, 300)}`
           snapshot.questions.filter((q) => q.pollMsgId && q.messageSecret).map((q) => ({ pollMsgId: q.pollMsgId, secretB64: q.messageSecret, scope: snapshot.scope }))
         );
         const game = snapshot;
-        for (const question of game.questions ?? []) {
-          question.pollCreationTimestamp ??= question.createdAt;
-          if (question.pollMsgId && !question.pollBinding) {
-            question.pollBinding = {
+        for (const question2 of game.questions ?? []) {
+          question2.pollCreationTimestamp ??= question2.createdAt;
+          if (question2.pollMsgId && !question2.pollBinding) {
+            question2.pollBinding = {
               sessionId: game.scope.sessionId,
               chatJid: game.scope.chatJid,
               gameId: game.id,
-              questionId: question.id,
-              ...question.pollMessageKey ? { pollMessageKey: question.pollMessageKey } : {},
-              pollCreationTimestamp: question.pollCreationTimestamp,
-              options: [...question.options],
-              ...question.correctIndex !== void 0 ? { correctOption: question.correctIndex } : {},
-              expiresAt: question.expiresAt
+              questionId: question2.id,
+              ...question2.pollMessageKey ? { pollMessageKey: question2.pollMessageKey } : {},
+              pollCreationTimestamp: question2.pollCreationTimestamp,
+              options: [...question2.options],
+              ...question2.correctIndex !== void 0 ? { correctOption: question2.correctIndex } : {},
+              expiresAt: question2.expiresAt
             };
           }
         }
@@ -34969,7 +34969,7 @@ ${message.slice(0, 300)}`
         const id = `q${game.questions.length}`;
         const secret = crypto12.randomBytes(32);
         const createdAt = this.now();
-        const question = {
+        const question2 = {
           id,
           prompt,
           options,
@@ -34983,29 +34983,29 @@ ${message.slice(0, 300)}`
           pollCreationTimestamp: createdAt,
           votes: {}
         };
-        if (extra.correctIndex !== void 0) question.correctIndex = extra.correctIndex;
-        if (extra.explanation) question.explanation = extra.explanation;
-        if (extra.category) question.category = extra.category;
-        if (extra.difficulty) question.difficulty = extra.difficulty;
-        game.questions.push(question);
+        if (extra.correctIndex !== void 0) question2.correctIndex = extra.correctIndex;
+        if (extra.explanation) question2.explanation = extra.explanation;
+        if (extra.category) question2.category = extra.category;
+        if (extra.difficulty) question2.difficulty = extra.difficulty;
+        game.questions.push(question2);
         this.persistSnapshot(game);
-        this.scheduleExpiry(scope, game, question, createdAt);
-        return question;
+        this.scheduleExpiry(scope, game, question2, createdAt);
+        return question2;
       }
-      scheduleExpiry(scope, game, question, now3) {
-        const tKey = this.timerKey(scope, game.id, question.id);
+      scheduleExpiry(scope, game, question2, now3) {
+        const tKey = this.timerKey(scope, game.id, question2.id);
         const existing = this.timers.get(tKey);
         if (existing) clearTimeout(existing);
-        const delay = Math.max(question.expiresAt - now3, 0);
+        const delay = Math.max(question2.expiresAt - now3, 0);
         const timer = setTimeout(() => {
           this.timers.delete(tKey);
-          void this.onQuestionExpired(scope, question);
+          void this.onQuestionExpired(scope, question2);
         }, delay);
         this.timers.set(tKey, timer);
       }
       /** Freeze the question, let the plugin score/reveal/advance. */
-      async onQuestionExpired(scope, question) {
-        const owner = this.findOwner(scope, question.id);
+      async onQuestionExpired(scope, question2) {
+        const owner = this.findOwner(scope, question2.id);
         if (!owner) return;
         const { game: g, question: q } = owner;
         if (g.status !== "active" || q.status !== "open") return;
@@ -35085,8 +35085,8 @@ ${message.slice(0, 300)}`
       recomputePlayers(game) {
         const previousScores = new Map(Object.entries(game.players).map(([jid, player]) => [jid, player.score]));
         game.players = {};
-        for (const question of game.questions) {
-          for (const voter of Object.keys(question.votes)) {
+        for (const question2 of game.questions) {
+          for (const voter of Object.keys(question2.votes)) {
             game.players[voter] ??= { jid: voter, score: previousScores.get(voter) ?? 0 };
           }
         }
@@ -35149,25 +35149,25 @@ function formatDuration2(ms) {
   }
   return `${Math.round(ms / 1e3)}s`;
 }
-function optionLines(question) {
-  return question.options.map((opt, i) => `  ${String.fromCharCode(65 + i)}) ${opt}`);
+function optionLines(question2) {
+  return question2.options.map((opt, i) => `  ${String.fromCharCode(65 + i)}) ${opt}`);
 }
-function renderWyrHeader(question, now3) {
-  const remaining = Math.max(question.expiresAt - now3, 0);
-  return [wyrTitle(), "", `\u2726 Question : ${question.prompt}`, ...optionLines(question), "", `\u23F1 Voting closes in ${formatDuration2(remaining)} \u2014 vote in the poll above!`, "", OMEGA_FOOTER].join("\n");
+function renderWyrHeader(question2, now3) {
+  const remaining = Math.max(question2.expiresAt - now3, 0);
+  return [wyrTitle(), "", `\u2726 Question : ${question2.prompt}`, ...optionLines(question2), "", `\u23F1 Voting closes in ${formatDuration2(remaining)} \u2014 vote in the poll above!`, "", OMEGA_FOOTER].join("\n");
 }
-function renderWyrResult(game, question) {
+function renderWyrResult(game, question2) {
   const perOption = {};
-  for (const [voter, optionIndex] of Object.entries(question.votes)) (perOption[optionIndex] ??= []).push(voter);
-  const ranked = Object.keys(perOption).map(Number).filter((idx) => idx >= 0 && idx < question.options.length).sort((a, b) => (perOption[b]?.length ?? 0) - (perOption[a]?.length ?? 0));
-  const allVoters = Object.keys(question.votes).filter(isUserJid2);
-  const lines = [`${wyrTitle()} \u2014 \u{1F3C6} RESULTS`, "", `\u2726 Question : ${question.prompt}`, ""];
+  for (const [voter, optionIndex] of Object.entries(question2.votes)) (perOption[optionIndex] ??= []).push(voter);
+  const ranked = Object.keys(perOption).map(Number).filter((idx) => idx >= 0 && idx < question2.options.length).sort((a, b) => (perOption[b]?.length ?? 0) - (perOption[a]?.length ?? 0));
+  const allVoters = Object.keys(question2.votes).filter(isUserJid2);
+  const lines = [`${wyrTitle()} \u2014 \u{1F3C6} RESULTS`, "", `\u2726 Question : ${question2.prompt}`, ""];
   const rows = [["Rank", "Choice", "Votes"]];
   const fallbackRows = [];
   ranked.forEach((idx, rankPos) => {
     const medal = RANK_MEDALS[rankPos] ?? `${rankPos + 1}.`;
     const voters = perOption[idx] ?? [];
-    const label = `${String.fromCharCode(65 + idx)}) ${question.options[idx]}`;
+    const label = `${String.fromCharCode(65 + idx)}) ${question2.options[idx]}`;
     rows.push([medal, label, String(voters.length)]);
     fallbackRows.push(`${medal} ${label} \u2014 ${voters.length} vote${voters.length === 1 ? "" : "s"}`);
     lines.push(`${medal} ${label} \u2014 ${voters.length} vote${voters.length === 1 ? "" : "s"}`);
@@ -35196,16 +35196,16 @@ function renderWyrFinal(game) {
   const text2 = [`${wyrTitle()} \u2014 \u{1F3C6} FINAL PARTICIPATION`, "", ...ranked.length ? fallback : ["No players participated."], "", OMEGA_FOOTER].join("\n");
   return { text: text2, mentions, table: { title: "\u{1F3C6} WYR FINAL PARTICIPATION", rows }, fallback: fallback.join("\n") || "No players participated." };
 }
-function renderQuizHeader(game, question, now3, total) {
-  const number = game.questions.indexOf(question) + 1;
-  const remaining = Math.max(question.expiresAt - now3, 0);
-  const meta = [question.category, question.difficulty].filter(Boolean).join(" \xB7 ");
-  return [`${quizTitle()} \u{1D11C} \u{1D5E4}\u{1D5E8}\u{1D5D8}\u{1D5E6}\u{1D5E7}\u{1D5DC}\u{1D5E2}\u{1D5E1} ${number}/${total}`, ...meta ? ["", `\u{1F4CD} ${meta}`] : [], "", `\u2726 Question : ${question.prompt}`, ...optionLines(question), "", `\u23F1 ${formatDuration2(remaining)} to answer \u2014 vote in the poll above!`, "", OMEGA_FOOTER].join("\n");
+function renderQuizHeader(game, question2, now3, total) {
+  const number = game.questions.indexOf(question2) + 1;
+  const remaining = Math.max(question2.expiresAt - now3, 0);
+  const meta = [question2.category, question2.difficulty].filter(Boolean).join(" \xB7 ");
+  return [`${quizTitle()} \u{1D11C} \u{1D5E4}\u{1D5E8}\u{1D5D8}\u{1D5E6}\u{1D5E7}\u{1D5DC}\u{1D5E2}\u{1D5E1} ${number}/${total}`, ...meta ? ["", `\u{1F4CD} ${meta}`] : [], "", `\u2726 Question : ${question2.prompt}`, ...optionLines(question2), "", `\u23F1 ${formatDuration2(remaining)} to answer \u2014 vote in the poll above!`, "", OMEGA_FOOTER].join("\n");
 }
-function renderQuizReveal(game, question, correctVoters, _now) {
-  const number = game.questions.indexOf(question) + 1;
-  const lines = [`${quizTitle()} \u{1D11C} \u{1D5D4}\u{1D5E1}\u{1D5E6}\u{1D5EA}\u{1D5D8}\u{1D5E5} \u2014 Q${number}`, "", `\u2705 Correct : ${String.fromCharCode(65 + (question.correctIndex ?? 0))}) ${question.options[question.correctIndex ?? 0] ?? "\u2014"}`];
-  if (question.explanation) lines.push(`\u{1F4D6} ${question.explanation}`);
+function renderQuizReveal(game, question2, correctVoters, _now) {
+  const number = game.questions.indexOf(question2) + 1;
+  const lines = [`${quizTitle()} \u{1D11C} \u{1D5D4}\u{1D5E1}\u{1D5E6}\u{1D5EA}\u{1D5D8}\u{1D5E5} \u2014 Q${number}`, "", `\u2705 Correct : ${String.fromCharCode(65 + (question2.correctIndex ?? 0))}) ${question2.options[question2.correctIndex ?? 0] ?? "\u2014"}`];
+  if (question2.explanation) lines.push(`\u{1F4D6} ${question2.explanation}`);
   if (correctVoters.length > 0) lines.push("", `\u2795 +1 point: ${correctVoters.map(mentionToken2).join(" ")}`);
   lines.push("", OMEGA_FOOTER);
   return lines.join("\n");
@@ -35309,13 +35309,13 @@ var init_wyr = __esm({
       },
       async start(engine, scope, game, durationMs, now3) {
         const content = await engine.ai.generateWyr(scope.sessionId);
-        const question = engine.createQuestion(scope, game, content.question, [content.optionA, content.optionB], {
+        const question2 = engine.createQuestion(scope, game, content.question, [content.optionA, content.optionB], {
           durationMs: questionDurationRemaining(game.endsAt, now3)
         });
-        return pollEventFor(game, question, renderWyrHeader(question, now3));
+        return pollEventFor(game, question2, renderWyrHeader(question2, now3));
       },
-      async onQuestionExpired(engine, game, question, now3) {
-        const result = renderWyrResult(game, question);
+      async onQuestionExpired(engine, game, question2, now3) {
+        const result = renderWyrResult(game, question2);
         game.players = {};
         for (const item of game.questions) {
           for (const voter of Object.keys(item.votes)) {
@@ -35328,7 +35328,7 @@ var init_wyr = __esm({
             scope: game.scope,
             gameType: game.type,
             gameId: game.id,
-            questionId: question.id,
+            questionId: question2.id,
             text: result.text,
             mentions: result.mentions
           }
@@ -35346,7 +35346,7 @@ var init_wyr = __esm({
           scope: game.scope,
           gameType: game.type,
           gameId: game.id,
-          questionId: question.id,
+          questionId: question2.id,
           text: result.fallback,
           nativeTable: result.table,
           tableFallbackText: result.fallback,
@@ -35356,7 +35356,7 @@ var init_wyr = __esm({
           scope: game.scope,
           gameType: game.type,
           gameId: game.id,
-          questionId: question.id,
+          questionId: question2.id,
           text: [result.text, "", "\u2705 Game duration complete. No more WYR polls will be generated.", "", final.text].join("\n"),
           nativeTable: final.table,
           tableFallbackText: final.fallback,
@@ -35365,8 +35365,8 @@ var init_wyr = __esm({
         await engine.finishGame(game);
         return events2;
       },
-      renderPollHeader(_game, question, now3) {
-        return renderWyrHeader(question, now3);
+      renderPollHeader(_game, question2, now3) {
+        return renderWyrHeader(question2, now3);
       }
     };
   }
@@ -35425,13 +35425,13 @@ var init_ai = __esm({
           "Return STRICT JSON only:",
           '{"question":"Would you rather ...?","optionA":"...","optionB":"..."}'
         ].join("\n"), { temperature: 0.9, maxTokens: 500 });
-        const question = String(content.question ?? "").trim();
+        const question2 = String(content.question ?? "").trim();
         const optionA = String(content.optionA ?? "").trim();
         const optionB = String(content.optionB ?? "").trim();
-        if (!question || !optionA || !optionB || optionA === optionB) {
+        if (!question2 || !optionA || !optionB || optionA === optionB) {
           throw new Error("Game AI returned an incomplete WYR question.");
         }
-        return { question, optionA, optionB };
+        return { question: question2, optionA, optionB };
       }
       /** Generate a deterministic question bank once for a Quiz game. */
       async generateQuiz(sessionId, count, categories) {
@@ -35451,13 +35451,13 @@ var init_ai = __esm({
         for (const item of raw.slice(0, safeCount)) {
           if (!item || typeof item !== "object") continue;
           const record = item;
-          const question = String(record.question ?? "").trim();
+          const question2 = String(record.question ?? "").trim();
           const options = Array.isArray(record.options) ? record.options.map((option) => String(option).trim()).filter(Boolean).slice(0, 4) : [];
           const correctIndex = Number(record.correctIndex);
-          if (!question || options.length < 2 || !Number.isInteger(correctIndex) || correctIndex < 0 || correctIndex >= options.length) continue;
+          if (!question2 || options.length < 2 || !Number.isInteger(correctIndex) || correctIndex < 0 || correctIndex >= options.length) continue;
           const difficulty = ["easy", "medium", "hard"].includes(String(record.difficulty)) ? String(record.difficulty) : "medium";
           questions.push({
-            question,
+            question: question2,
             options,
             correctIndex,
             explanation: String(record.explanation ?? "").trim() || "The answer is shown after the poll closes.",
@@ -35603,22 +35603,22 @@ var init_quiz = __esm({
         };
         const first = bank[0];
         if (!first) throw new Error("No quiz questions were generated.");
-        const question = engine.createQuestion(scope, game, first.question, first.options, {
+        const question2 = engine.createQuestion(scope, game, first.question, first.options, {
           durationMs: questionDurationRemaining(game.endsAt, now3),
           correctIndex: first.correctIndex,
           explanation: first.explanation,
           category: first.category,
           difficulty: first.difficulty
         });
-        return pollEventFor(game, question, renderQuizHeader(game, question, now3, bank.length));
+        return pollEventFor(game, question2, renderQuizHeader(game, question2, now3, bank.length));
       },
-      async onQuestionExpired(engine, game, question, now3) {
+      async onQuestionExpired(engine, game, question2, now3) {
         const config2 = game.configuration;
         const bank = config2.quizBank ?? engine.ai.getCachedQuiz(game.id) ?? [];
         const correctVoters = [];
-        for (const [voter, optionIndex] of Object.entries(question.votes)) {
+        for (const [voter, optionIndex] of Object.entries(question2.votes)) {
           const player = game.players[voter];
-          if (player && optionIndex === question.correctIndex) {
+          if (player && optionIndex === question2.correctIndex) {
             player.score += 1;
             correctVoters.push(voter);
           }
@@ -35627,8 +35627,8 @@ var init_quiz = __esm({
           scope: game.scope,
           gameType: game.type,
           gameId: game.id,
-          questionId: question.id,
-          text: renderQuizReveal(game, question, correctVoters, now3),
+          questionId: question2.id,
+          text: renderQuizReveal(game, question2, correctVoters, now3),
           mentions: correctVoters
         };
         const leaderboard = renderQuizLeaderboard(game);
@@ -35636,7 +35636,7 @@ var init_quiz = __esm({
           scope: game.scope,
           gameType: game.type,
           gameId: game.id,
-          questionId: question.id,
+          questionId: question2.id,
           text: leaderboard.text,
           mentions: leaderboard.mentions
         };
@@ -35657,7 +35657,7 @@ var init_quiz = __esm({
               scope: game.scope,
               gameType: game.type,
               gameId: game.id,
-              questionId: question.id,
+              questionId: question2.id,
               text: leaderboard.fallback,
               nativeTable: leaderboard.table,
               tableFallbackText: leaderboard.fallback
@@ -35674,7 +35674,7 @@ var init_quiz = __esm({
             scope: game.scope,
             gameType: game.type,
             gameId: game.id,
-            questionId: question.id,
+            questionId: question2.id,
             text: final.text,
             mentions: final.mentions
           },
@@ -35682,16 +35682,16 @@ var init_quiz = __esm({
             scope: game.scope,
             gameType: game.type,
             gameId: game.id,
-            questionId: question.id,
+            questionId: question2.id,
             text: final.fallback,
             nativeTable: final.table,
             tableFallbackText: final.fallback
           }
         ];
       },
-      renderPollHeader(game, question, now3) {
+      renderPollHeader(game, question2, now3) {
         const config2 = game.configuration;
-        return renderQuizHeader(game, question, now3, config2.quizBank?.length ?? game.schedule.questionCount);
+        return renderQuizHeader(game, question2, now3, config2.quizBank?.length ?? game.schedule.questionCount);
       }
     };
   }
@@ -36668,12 +36668,12 @@ async function handleWAEvent(sessionId, event, data, socket) {
             const owner = ["wyr", "quiz"].map((gameType) => {
               const game = pollGameEngine.getGame({ sessionId, chatJid: updateChatJid }, gameType);
               if (!game) return null;
-              const question = game.questions.find((candidate) => {
+              const question2 = game.questions.find((candidate) => {
                 const binding = candidate.pollBinding;
                 if (binding && (binding.sessionId !== sessionId || binding.chatJid !== updateChatJid || binding.gameId !== game.id || binding.questionId !== candidate.id)) return false;
                 return (binding?.pollMessageKey?.id ?? candidate.pollMsgId) === u.key.id;
               });
-              return question ? { game, question } : null;
+              return question2 ? { game, question: question2 } : null;
             }).find((candidate) => Boolean(candidate));
             if (!owner) continue;
             const ownerQuestion = owner.question;
@@ -37131,7 +37131,7 @@ async function handleMessages(sessionId, upsert, socket) {
           ...pollGameEngine.getGame({ sessionId, chatJid: pollChatJid }, "wyr")?.questions ?? [],
           ...pollGameEngine.getGame({ sessionId, chatJid: pollChatJid }, "quiz")?.questions ?? []
         ];
-        const trackedOwner = trackedQuestions.find((question) => (question.pollBinding?.pollMessageKey?.id ?? question.pollMsgId) === pollUpdate.pollCreationMessageKey.id);
+        const trackedOwner = trackedQuestions.find((question2) => (question2.pollBinding?.pollMessageKey?.id ?? question2.pollMsgId) === pollUpdate.pollCreationMessageKey.id);
         const managedPoll = !trackedOwner ? getPollManager().lookup({ sessionId, chatJid: pollChatJid }, pollUpdate.pollCreationMessageKey.id) : null;
         if (!trackedOwner && !managedPoll) {
           const warningKey = `${sessionId}:${pollChatJid}`;
@@ -43568,8 +43568,8 @@ var HealthReporter_exports = {};
 __export(HealthReporter_exports, {
   HealthReporter: () => HealthReporter
 });
-import fs34 from "fs";
-import path30 from "path";
+import fs35 from "fs";
+import path31 from "path";
 var HealthReporter;
 var init_HealthReporter = __esm({
   "src/utils/HealthReporter.ts"() {
@@ -43625,10 +43625,10 @@ var init_HealthReporter = __esm({
         const results = [];
         const requiredDirs = ["logs", "sessions", "dist"];
         for (const dir of requiredDirs) {
-          const fullPath = path30.resolve(process.cwd(), dir);
-          if (!fs34.existsSync(fullPath)) {
+          const fullPath = path31.resolve(process.cwd(), dir);
+          if (!fs35.existsSync(fullPath)) {
             results.push({ component: `Dir: ${dir}`, status: "error", message: "Missing" });
-          } else if (!fs34.lstatSync(fullPath).isDirectory()) {
+          } else if (!fs35.lstatSync(fullPath).isDirectory()) {
             results.push({ component: `Dir: ${dir}`, status: "error", message: "Not a directory" });
           } else {
             results.push({ component: `Dir: ${dir}`, status: "ok" });
@@ -43643,8 +43643,8 @@ var init_HealthReporter = __esm({
 // src/index.ts
 import "dotenv/config";
 import PQueue4 from "p-queue";
-import fs35 from "fs";
-import path31 from "path";
+import fs36 from "fs";
+import path32 from "path";
 
 // src/web/server.ts
 import express from "express";
@@ -46854,6 +46854,9 @@ import {
   ClientRuntime,
   MonolithWorkloadAdapter
 } from "@omega/client/library";
+import crypto16 from "node:crypto";
+import fs32 from "node:fs";
+import path29 from "node:path";
 var runtime;
 function iso(value, fallback = (/* @__PURE__ */ new Date()).toISOString()) {
   if (typeof value === "number" && Number.isFinite(value)) return new Date(value).toISOString();
@@ -47010,22 +47013,55 @@ function sourceFor(workspaceId, deploymentId) {
     }
   };
 }
-async function startPterodactylClientBridge() {
-  if (process.env.OMEGA_CLIENT_ADAPTER !== "true" || runtime) return;
-  const workspaceId = process.env.OMEGA_WORKSPACE_ID?.trim();
-  const deploymentId = process.env.OMEGA_DEPLOYMENT_ID?.trim();
-  if (!workspaceId || !deploymentId) {
-    logger.warn("[PterodactylAdapter] Adapter disabled: OMEGA_WORKSPACE_ID and OMEGA_DEPLOYMENT_ID are required");
-    return;
-  }
+function installationFilePath() {
+  const workspaceRoot = path29.resolve(process.env.OMEGA_WORKSPACE_ROOT?.trim() || path29.join(process.cwd(), "workspace"));
+  return path29.resolve(process.env.OMEGA_INSTALLATION_FILE?.trim() || path29.join(workspaceRoot, "installation.json"));
+}
+function loadOrCreateInstallationIdentity() {
+  const filePath = installationFilePath();
   try {
+    const value = JSON.parse(fs32.readFileSync(filePath, "utf8"));
+    if (value.clientId && value.deploymentId && value.workspaceId) return value;
+  } catch {
+  }
+  const identity = {
+    clientId: process.env.OMEGA_CLIENT_ID?.trim() || crypto16.randomUUID(),
+    deploymentId: process.env.OMEGA_DEPLOYMENT_ID?.trim() || crypto16.randomUUID(),
+    workspaceId: process.env.OMEGA_WORKSPACE_ID?.trim() || crypto16.randomUUID(),
+    licenseId: "PENDING_CORE_REGISTRATION",
+    protocolVersion: 1,
+    agentVersion: process.env.OMEGA_AGENT_VERSION?.trim() || "1.0.0",
+    createdAt: (/* @__PURE__ */ new Date()).toISOString(),
+    status: "OFFLINE"
+  };
+  fs32.mkdirSync(path29.dirname(filePath), { recursive: true, mode: 448 });
+  const temporary = `${filePath}.${process.pid}.tmp`;
+  fs32.writeFileSync(temporary, `${JSON.stringify(identity, null, 2)}\\n`, { mode: 384 });
+  fs32.renameSync(temporary, filePath);
+  return identity;
+}
+async function startPterodactylClientBridge() {
+  if (runtime) return;
+  const adapterSetting = process.env.OMEGA_CLIENT_ADAPTER?.trim().toLowerCase();
+  const apiUrl = process.env.OMEGA_API_URL?.trim() || process.env.OMEGA_CORE_URL?.trim();
+  if (!apiUrl && adapterSetting !== "true") return;
+  if (adapterSetting === "false") return;
+  if (apiUrl && !process.env.OMEGA_API_URL) process.env.OMEGA_API_URL = apiUrl;
+  process.env.OMEGA_CLIENT_ADAPTER = "true";
+  try {
+    const identity = loadOrCreateInstallationIdentity();
+    process.env.OMEGA_CLIENT_ID ||= identity.clientId;
+    process.env.OMEGA_WORKSPACE_ID ||= identity.workspaceId;
+    process.env.OMEGA_DEPLOYMENT_ID ||= identity.deploymentId;
+    const workspaceId = process.env.OMEGA_WORKSPACE_ID.trim();
+    const deploymentId = process.env.OMEGA_DEPLOYMENT_ID.trim();
     const adapter = new MonolithWorkloadAdapter(workspaceId, deploymentId, sourceFor(workspaceId, deploymentId));
     runtime = new ClientRuntime({ workload: adapter });
     await runtime.start();
-    logger.info("[PterodactylAdapter] Local workload adapter attached", { workspaceId, deploymentId });
+    logger.info("[PterodactylAdapter] Core enrollment and local workload sync started", { workspaceId, deploymentId });
   } catch (error2) {
     runtime = void 0;
-    logger.error("[PterodactylAdapter] Attachment failed; monolith remains authoritative", { error: String(error2) });
+    logger.error("[PterodactylAdapter] Core sync unavailable; local bot remains authoritative", { error: String(error2) });
   }
 }
 async function stopPterodactylClientBridge() {
@@ -47040,15 +47076,21 @@ async function stopPterodactylClientBridge() {
 }
 
 // src/setup/customer-runtime.ts
-import fs32 from "node:fs";
-import path29 from "node:path";
+import fs33 from "node:fs";
+import path30 from "node:path";
 import readline from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
-var MARKER = path29.resolve(process.env.OMEGA_CUSTOMER_SETUP_MARKER?.trim() || "./.omega-customer-setup.json");
+var MARKER = path30.resolve(process.env.OMEGA_CUSTOMER_SETUP_MARKER?.trim() || "./.omega-customer-setup.json");
 var CUSTOMER_MODE = process.env.OMEGA_CUSTOMER_RUNTIME === "true" || process.env.OMEGA_PLATFORM === "pterodactyl";
 var BUILTIN_OWNER_ID = "8831887192";
+var RESET = "\x1B[0m";
+var CYAN = "\x1B[36m";
+var GREEN = "\x1B[32m";
+var YELLOW = "\x1B[33m";
+var DIM = "\x1B[2m";
+var WHITE = "\x1B[37m";
 var pendingPairingPhone;
-function say(text2) {
+function say(text2 = "") {
   output.write(`${text2}
 `);
 }
@@ -47061,21 +47103,20 @@ function masked(value) {
 function setupAlreadyCompleted() {
   if (process.env.OMEGA_CUSTOMER_SETUP_FORCE === "true") return false;
   try {
-    const marker = JSON.parse(fs32.readFileSync(MARKER, "utf8"));
+    const marker = JSON.parse(fs33.readFileSync(MARKER, "utf8"));
     if (!marker.completedAt) return false;
-    if (!configured(process.env.TELEGRAM_BOT_TOKEN) && !marker.telegramSkipped) return false;
-    return true;
+    return configured(process.env.TELEGRAM_BOT_TOKEN) || marker.telegramSkipped === true;
   } catch {
     return false;
   }
 }
 function saveMarker(values) {
-  fs32.mkdirSync(path29.dirname(MARKER), { recursive: true, mode: 448 });
-  fs32.writeFileSync(MARKER, JSON.stringify({ version: 1, completedAt: (/* @__PURE__ */ new Date()).toISOString(), ...values }, null, 2), { mode: 384 });
+  fs33.mkdirSync(path30.dirname(MARKER), { recursive: true, mode: 448 });
+  fs33.writeFileSync(MARKER, JSON.stringify({ version: 2, completedAt: (/* @__PURE__ */ new Date()).toISOString(), ...values }, null, 2), { mode: 384 });
 }
 function persistEnv(values) {
-  const envPath = path29.resolve(".env");
-  const current = fs32.existsSync(envPath) ? fs32.readFileSync(envPath, "utf8").split(/\r?\n/u) : [];
+  const envPath = path30.resolve(".env");
+  const current = fs33.existsSync(envPath) ? fs33.readFileSync(envPath, "utf8").split(/\r?\n/u) : [];
   for (const [key2, value] of Object.entries(values)) {
     if (!value) continue;
     const line2 = `${key2}=${JSON.stringify(value)}`;
@@ -47083,8 +47124,33 @@ function persistEnv(values) {
     if (index >= 0) current[index] = line2;
     else current.push(line2);
   }
-  fs32.writeFileSync(envPath, `${current.filter(Boolean).join("\n")}
+  fs33.writeFileSync(envPath, `${current.filter(Boolean).join("\n")}
 `, { mode: 384 });
+}
+function question(rl, prompt) {
+  return rl.question(`${CYAN}${prompt}${RESET}`);
+}
+async function questionWithCountdown(rl, prompt, timeoutMs2) {
+  let remaining = Math.ceil(timeoutMs2 / 1e3);
+  let timedOut = false;
+  const timer = setInterval(() => {
+    remaining -= 1;
+    if (remaining > 0) output.write(`\r${DIM}No input? WhatsApp setup will be skipped in ${remaining}s.${RESET} `);
+  }, 1e3);
+  timer.unref?.();
+  try {
+    const value = await Promise.race([
+      question(rl, prompt),
+      new Promise((resolve) => setTimeout(() => {
+        timedOut = true;
+        resolve("");
+      }, timeoutMs2))
+    ]);
+    return { value: value.trim(), timedOut };
+  } finally {
+    clearInterval(timer);
+    if (timedOut) say();
+  }
 }
 function hasCustomerPairingPending() {
   return Boolean(pendingPairingPhone);
@@ -47105,46 +47171,52 @@ async function runCustomerFirstRun() {
   }
   const panelInteractive = process.env.OMEGA_PLATFORM === "pterodactyl" && process.env.OMEGA_SETUP_NONINTERACTIVE !== "true";
   if ((!input.isTTY || !output.isTTY) && !panelInteractive) {
-    if (pendingPairingPhone) say(`[Setup] Noninteractive pairing scheduled for +${pendingPairingPhone}.`);
-    else {
-      say("[Setup] Customer runtime is awaiting first-run configuration.");
-      say("[Setup] Attach to the Pterodactyl console and rerun with an interactive terminal.");
-    }
+    say(`${YELLOW}[SETUP]${RESET} First-run setup needs the panel Console. Set OMEGA_SETUP_NONINTERACTIVE=true to skip it.`);
     return;
   }
   const rl = readline.createInterface({ input, output });
   try {
-    process.env.TELEGRAM_OWNER_ID = BUILTIN_OWNER_ID;
-    say("");
-    say("OMEGA SETUP \xB7 CUSTOMER RUNTIME");
-    say("Telegram is optional. WhatsApp pairing can be completed separately.");
-    say("");
+    say();
+    say(`${CYAN}\u256D\u2500 OMEGA FIRST-RUN SETUP \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u256E${RESET}`);
+    say(`${CYAN}\u2502${RESET} This takes about one minute. You can skip either step. ${CYAN}\u2502${RESET}`);
+    say(`${CYAN}\u2570\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u256F${RESET}`);
+    say();
+    say(`${WHITE}STEP 1 OF 2 \xB7 TELEGRAM CONTROL${RESET}`);
+    say(`${DIM}Telegram lets you control the bot remotely. Paste the BotFather token, or type SKIP.${RESET}`);
     if (!configured(process.env.TELEGRAM_BOT_TOKEN)) {
-      const token2 = (await rl.question("Telegram bot token (or skip): ")).trim();
+      const token2 = (await question(rl, "Send your Telegram bot token (or type SKIP): ")).trim();
       if (token2 && !/^skip$/iu.test(token2)) {
         process.env.TELEGRAM_BOT_TOKEN = token2;
-        persistEnv({ TELEGRAM_BOT_TOKEN: token2, TELEGRAM_OWNER_ID: BUILTIN_OWNER_ID });
-        say(`Telegram: configured (${masked(token2)})`);
+        say(`${GREEN}\u2713 Telegram token saved (${masked(token2)})${RESET}`);
       } else {
         delete process.env.TELEGRAM_BOT_TOKEN;
-        persistEnv({ TELEGRAM_OWNER_ID: BUILTIN_OWNER_ID });
-        say("Telegram: skipped");
+        say(`${YELLOW}\u2022 Telegram skipped. WhatsApp can still run by itself.${RESET}`);
       }
-    } else say("Telegram: already configured");
-    const configuredPhone2 = process.env.OMEGA_PAIRING_PHONE?.trim();
-    const rawPhone = configuredPhone2 || (await rl.question("WhatsApp number in international format (or skip): ")).trim();
-    if (rawPhone && !/^skip$/iu.test(rawPhone)) {
+    } else say(`${GREEN}\u2713 Telegram token already configured${RESET}`);
+    say();
+    say(`${WHITE}STEP 2 OF 2 \xB7 WHATSAPP PAIRING${RESET}`);
+    say(`${DIM}Enter the WhatsApp number in international format, for example 2348012345678.${RESET}`);
+    say(`${DIM}Type SKIP, or wait one minute to continue with Telegram only.${RESET}`);
+    const phoneResult = configuredPhone ? { value: configuredPhone, timedOut: false } : await questionWithCountdown(rl, "Send WhatsApp number (or type SKIP): ", 6e4);
+    if (phoneResult.value && !/^skip$/iu.test(phoneResult.value)) {
       const { normalizePairingPhone: normalizePairingPhone2 } = await Promise.resolve().then(() => (init_socket_manager(), socket_manager_exports));
-      pendingPairingPhone = normalizePairingPhone2(rawPhone, { requireAssignedCountryCode: true });
-      say(`WhatsApp: pairing scheduled for +${pendingPairingPhone}${configuredPhone2 ? " (environment configured)" : ""}`);
-    } else say("WhatsApp: skipped");
+      pendingPairingPhone = normalizePairingPhone2(phoneResult.value, { requireAssignedCountryCode: true });
+      say(`${GREEN}\u2713 WhatsApp pairing queued for +${pendingPairingPhone}${RESET}`);
+    } else {
+      say(`${YELLOW}\u2022 WhatsApp skipped${phoneResult.timedOut ? " after one minute" : ""}.${RESET}`);
+    }
+    persistEnv({ TELEGRAM_BOT_TOKEN: process.env.TELEGRAM_BOT_TOKEN, TELEGRAM_OWNER_ID: BUILTIN_OWNER_ID });
     saveMarker({
       telegramConfigured: configured(process.env.TELEGRAM_BOT_TOKEN),
       telegramSkipped: !configured(process.env.TELEGRAM_BOT_TOKEN),
       ownerIdProtected: true,
       whatsappConfigured: Boolean(pendingPairingPhone)
     });
-    say("Setup saved. Starting the local runtime.");
+    say();
+    if (process.env.TELEGRAM_BOT_TOKEN && pendingPairingPhone) say(`${GREEN}\u2713 Telegram and WhatsApp setup saved. Starting both services.${RESET}`);
+    else if (process.env.TELEGRAM_BOT_TOKEN) say(`${GREEN}\u2713 Telegram setup saved. Starting Telegram now; WhatsApp can be paired after restart.${RESET}`);
+    else if (pendingPairingPhone) say(`${GREEN}\u2713 WhatsApp setup saved. Starting WhatsApp now; Telegram remains skipped.${RESET}`);
+    else say(`${YELLOW}\u2022 Both channels were skipped. Pair WhatsApp or configure Telegram, then restart.${RESET}`);
   } finally {
     rl.close();
   }
@@ -47191,7 +47263,7 @@ init_message_lifecycle();
 // src/runtime/storage-tunnel.ts
 init_logger();
 import net from "node:net";
-import fs33 from "node:fs";
+import fs34 from "node:fs";
 import { Client } from "ssh2";
 var tunnelReady = false;
 var tunnelStop;
@@ -47276,8 +47348,8 @@ async function startStorageTunnel(config2 = storageTunnelConfigFromEnv()) {
   if (!config2.enabled) return;
   if (!config2.host) throw new Error("OMEGA_TUNNEL_HOST is required when OMEGA_TUNNEL_ENABLED=true");
   if (!config2.hostFingerprint) throw new Error("OMEGA_TUNNEL_HOST_KEY_SHA256 is required for strict host verification");
-  if (!fs33.existsSync(config2.keyFile)) throw new Error(`SSH tunnel key is missing: ${config2.keyFile}`);
-  const privateKey = fs33.readFileSync(config2.keyFile);
+  if (!fs34.existsSync(config2.keyFile)) throw new Error(`SSH tunnel key is missing: ${config2.keyFile}`);
+  const privateKey = fs34.readFileSync(config2.keyFile);
   const client = new Client();
   const redisForwarder = createForwarder(client, config2.localRedisPort, config2.remoteRedisPort);
   const mongoForwarder = createForwarder(client, config2.localMongoPort, config2.remoteMongoPort);
@@ -47446,9 +47518,9 @@ async function bootstrap() {
   }
   const dirs = ["logs", "sessions", "uploads", "temp"];
   for (const dir of dirs) {
-    if (!fs35.existsSync(dir)) {
+    if (!fs36.existsSync(dir)) {
       try {
-        fs35.mkdirSync(dir, { recursive: true });
+        fs36.mkdirSync(dir, { recursive: true });
         healthResults.push({ component: `Dir: ${dir}`, status: "ok", message: "Created" });
       } catch (e) {
         healthResults.push({ component: `Dir: ${dir}`, status: "error", message: "Failed to create" });
@@ -47806,7 +47878,7 @@ async function restoreSessions(options = {}) {
       let pairingReference = meta.lastSeen;
       if (!pairingReference) {
         try {
-          pairingReference = fs35.statSync(sessionMetaPath(telegramId, sessionId)).mtimeMs;
+          pairingReference = fs36.statSync(sessionMetaPath(telegramId, sessionId)).mtimeMs;
         } catch {
           pairingReference = Date.now();
         }
@@ -47861,7 +47933,7 @@ async function restoreSessions(options = {}) {
         });
         registerSessionOwner(sessionId, telegramId);
         const authDir = sessionAuthDir(telegramId, sessionId);
-        if (!fs35.existsSync(path31.join(authDir, "creds.json"))) {
+        if (!fs36.existsSync(path32.join(authDir, "creds.json"))) {
           logger.warn(
             `[Boot] Auth credentials missing for ${sessionId}. Session marked FAILED; no automatic freeze or purge is performed.`
           );
